@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' blob: data:;" />
+  <title>CoordRippr</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="toolbar">
+    <div class="tb-group">
+      <button id="btn-open-folder" title="Scan every PDF in a folder (recursive)">Open Folder…</button>
+      <button id="btn-open-files" title="Pick individual PDF files">Open PDFs…</button>
+    </div>
+    <div class="tb-group" id="format-group" title="How latitude / longitude are written in the CSV">
+      <span class="tb-label">Coords:</span>
+      <label><input type="radio" name="fmt" value="dd" checked /> DD</label>
+      <label><input type="radio" name="fmt" value="dms" /> DMS</label>
+      <label><input type="radio" name="fmt" value="both" /> Both (DD 3/4, DMS 5/6)</label>
+    </div>
+    <div class="tb-group">
+      <label title="Show pages without any detected coordinates too">
+        <input type="checkbox" id="chk-all-pages" /> Show all pages
+      </label>
+    </div>
+    <div class="tb-group">
+      <button id="btn-zoom-out" title="Zoom out">−</button>
+      <span id="zoom-level">140%</span>
+      <button id="btn-zoom-in" title="Zoom in">+</button>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-group">
+      <button id="btn-export" class="primary">Export CSV…</button>
+    </div>
+  </header>
+
+  <main id="split">
+    <section id="left">
+      <div id="csv-tools">
+        <div class="tool-row">
+          <button id="btn-add-row" title="Append an empty row">+ Row</button>
+          <button id="btn-del-rows" title="Delete the selected rows">Delete Selected</button>
+          <span id="sel-info" class="muted"></span>
+        </div>
+        <div class="tool-row" id="fill-tools" title="Mass-enter a value into column 1 or 2">
+          <span class="tb-label">Fill</span>
+          <select id="fill-col"><option value="c1">Col 1</option><option value="c2">Col 2</option></select>
+          <span>rows</span>
+          <input id="fill-from" type="number" min="1" placeholder="2" />
+          <span>–</span>
+          <input id="fill-to" type="number" min="1" placeholder="23" />
+          <span>with</span>
+          <input id="fill-value" type="text" placeholder="value" />
+          <button id="btn-fill-range">Apply</button>
+          <button id="btn-fill-selected" title="Fill the selected rows instead of a range">Apply to Selected</button>
+        </div>
+      </div>
+      <div id="csv-scroll">
+        <table id="csv-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+        <div id="csv-empty" class="empty-hint">
+          Open a folder of PDFs to start ripping coordinates.<br/>
+          <span class="muted">Detected pairs land here; click a row to jump to it in the PDF.<br/>
+          Tip: Ctrl+D in a cell copies the value from the row above.</span>
+        </div>
+      </div>
+    </section>
+
+    <div id="divider"></div>
+
+    <section id="right">
+      <aside id="filelist"><div class="empty-hint muted" id="filelist-empty">No PDFs loaded</div></aside>
+      <div id="pages-scroll">
+        <div id="pages"></div>
+        <div id="pdf-empty" class="empty-hint">
+          <div class="logo-hint">🌐</div>
+          Pages with detected coordinates appear here.<br/>
+          <span class="muted">Click a highlight to jump to its CSV row.</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer id="status">Ready.</footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
