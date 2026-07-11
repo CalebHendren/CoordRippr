@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' blob: data:;" />
+  <title>CoordRippr</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="toolbar">
+    <div class="tb-group">
+      <button id="btn-open-folder" title="Scan every PDF in a folder (recursive)">Open Folder…</button>
+      <button id="btn-open-files" title="Pick individual PDF files">Open PDFs…</button>
+    </div>
+    <div class="tb-group" id="format-group" title="How latitude / longitude are written in the CSV">
+      <span class="tb-label">Coords:</span>
+      <label><input type="radio" name="fmt" value="dd" checked /> DD</label>
+      <label><input type="radio" name="fmt" value="dms" /> DMS</label>
+      <label><input type="radio" name="fmt" value="both" /> Both (DD 3/4, DMS 5/6)</label>
+    </div>
+    <div class="tb-group">
+      <label title="Show pages without any detected coordinates too">
+        <input type="checkbox" id="chk-all-pages" /> Show all pages
+      </label>
+    </div>
+    <div class="tb-group">
+      <button id="btn-zoom-out" title="Zoom out">−</button>
+      <span id="zoom-level">140%</span>
+      <button id="btn-zoom-in" title="Zoom in">+</button>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-group">
+      <button id="btn-llm" title="Verify coordinates and fill columns 1–2 with an LLM (your own API key)">✨ LLM Assist…</button>
+      <button id="btn-export" class="primary">Export CSV…</button>
+    </div>
+  </header>
+
+  <main id="split">
+    <section id="left">
+      <div id="csv-tools">
+        <div class="tool-row">
+          <button id="btn-add-row" title="Append an empty row">+ Row</button>
+          <button id="btn-del-rows" title="Delete the selected rows">Delete Selected</button>
+          <span id="sel-info" class="muted"></span>
+        </div>
+        <div class="tool-row" id="fill-tools" title="Mass-enter a value into column 1 or 2">
+          <span class="tb-label">Fill</span>
+          <select id="fill-col"><option value="c1">Col 1</option><option value="c2">Col 2</option></select>
+          <span>rows</span>
+          <input id="fill-from" type="number" min="1" placeholder="2" />
+          <span>–</span>
+          <input id="fill-to" type="number" min="1" placeholder="23" />
+          <span>with</span>
+          <input id="fill-value" type="text" placeholder="value" />
+          <button id="btn-fill-range">Apply</button>
+          <button id="btn-fill-selected" title="Fill the selected rows instead of a range">Apply to Selected</button>
+        </div>
+      </div>
+      <div id="csv-scroll">
+        <table id="csv-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+        <div id="csv-empty" class="empty-hint">
+          Open a folder of PDFs to start ripping coordinates.<br/>
+          <span class="muted">Detected pairs land here; click a row to jump to it in the PDF.<br/>
+          Tip: Ctrl+D in a cell copies the value from the row above.</span>
+        </div>
+      </div>
+    </section>
+
+    <div id="divider"></div>
+
+    <section id="right">
+      <aside id="filelist"><div class="empty-hint muted" id="filelist-empty">No PDFs loaded</div></aside>
+      <div id="pages-scroll">
+        <div id="pages"></div>
+        <div id="pdf-empty" class="empty-hint">
+          <div class="logo-hint">🌐</div>
+          Pages with detected coordinates appear here.<br/>
+          <span class="muted">Click a highlight to jump to its CSV row.</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer id="footer">
+    <div id="status">Ready.</div>
+    <div id="footer-right">
+      <span id="update-chip" class="hidden" role="button" title="Open the releases page"></span>
+      <span id="app-version" class="muted"></span>
+      <button id="btn-check-updates" class="linkish" title="Check GitHub for a newer release">Check for updates</button>
+      <button id="btn-kofi" class="linkish" title="Support CoordRippr development on Ko-fi">☕ Ko-fi</button>
+    </div>
+  </footer>
+
+  <dialog id="llm-dialog">
+    <form id="llm-form" method="dialog">
+      <h2>✨ LLM Assist</h2>
+      <div class="warn-banner">
+        ⚠️ <strong>Use at your own risk.</strong> This sends the selected PDF text and your CSV rows
+        to the provider you choose, using your own API key. LLMs make mistakes and invent details —
+        <strong>always verify the results yourself</strong> before relying on them.
+      </div>
+
+      <div class="llm-grid">
+        <label>Provider
+          <select id="llm-provider"></select>
+        </label>
+        <label>Model
+          <input id="llm-model" type="text" spellcheck="false" />
+        </label>
+        <label class="wide">API key <span class="muted">(stored unencrypted in this app's local data; sent only to the provider)</span>
+          <input id="llm-key" type="password" spellcheck="false" autocomplete="off" />
+        </label>
+        <label class="wide">Endpoint URL
+          <input id="llm-url" type="text" spellcheck="false" />
+        </label>
+
+        <fieldset class="wide">
+          <legend>PDF text to send</legend>
+          <label><input type="radio" name="llm-scope" value="coords" checked /> Only pages with detected coordinates</label>
+          <label><input type="radio" name="llm-scope" value="all" /> Full PDFs (all pages)</label>
+        </fieldset>
+
+        <fieldset class="wide">
+          <legend>Tasks</legend>
+          <label><input type="checkbox" id="llm-verify" checked /> Verify coordinates against the PDF text</label>
+          <label><input type="checkbox" id="llm-fill" checked /> Fill columns 1 &amp; 2 from the PDF text</label>
+          <label><input type="checkbox" id="llm-overwrite" /> Overwrite non-empty cells in columns 1 &amp; 2</label>
+        </fieldset>
+
+        <label class="wide">Add to the prompt <span class="muted">(what columns 1–2 mean, what to look for, …)</span>
+          <textarea id="llm-extra" rows="3" placeholder="e.g. Column 1 = animal name, Column 2 = the animal's colour as described in the text"></textarea>
+        </label>
+      </div>
+
+      <div id="llm-status" class="muted"></div>
+      <menu>
+        <button value="cancel" id="llm-close" type="submit">Close</button>
+        <button type="button" id="llm-run" class="primary">Run</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script type="module" src="webshim.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

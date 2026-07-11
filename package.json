@@ -1,0 +1,75 @@
+{
+  "name": "coordrippr",
+  "productName": "CoordRippr",
+  "version": "0.1.0",
+  "description": "Extract coordinate data from PDFs into clean CSV",
+  "main": "main.js",
+  "type": "module",
+  "license": "MIT",
+  "author": "Caleb Hendren <calebahendren@gmail.com>",
+  "homepage": "https://github.com/CalebHendren/CoordRippr",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CalebHendren/CoordRippr.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "web": "node tools/build-web.mjs",
+    "dist": "electron-builder --publish never"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^4.10.38"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.calebhendren.coordrippr",
+    "productName": "CoordRippr",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "src/**/*",
+      "build/icon.png",
+      "node_modules/**/*",
+      "!node_modules/**/{test,tests,docs,example,examples}/**",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "license": "LICENSE",
+      "uninstallDisplayName": "${productName} ${version}",
+      "runAfterFinish": true
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "build/icon.png",
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": ["deb", "rpm", "pacman"],
+      "icon": "build/icon.png",
+      "category": "Office",
+      "maintainer": "Caleb Hendren <calebahendren@gmail.com>",
+      "synopsis": "Extract coordinate data from PDFs",
+      "description": "GUI tool that scans PDFs (including two-column journal articles) for latitude/longitude coordinates in DD or DMS form, highlights them on the page, and exports a cleaned CSV."
+    }
+  }
+}

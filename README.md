@@ -1,1 +1,133 @@
-# CoordRippr
+# CoordRippr 🌐⚔️
+
+**Rip coordinate data out of PDFs.** Point CoordRippr at a folder of PDFs (journal
+articles, reports, field notes — two-column layouts welcome) and it scans every
+page for anything that remotely resembles a latitude/longitude, highlights the
+hits on the page, and builds a clean, editable CSV.
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support%20development-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/calebhendren)
+
+If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-fi.com/calebhendren) ☕
+
+## Features
+
+- **Batch scanning** — open a folder and every PDF in it (recursively) is scanned.
+  Individual file picking and drag & drop work too.
+- **Extremely wide detection net** — DD (`41.40338, 2.17403`) and DMS
+  (`41°24'12.2"N`) in all their degenerate forms:
+  - `o` or `O` standing in for the degree symbol (`12o30'N`)
+  - any tick mark for minutes/seconds: `'` `′` `’` `` ` `` `´`, `"` `″` `”`, doubled ticks
+  - hemisphere as letters (`N`, `s`) or words (`South`, `West`), leading or trailing
+  - `Lat.` / `Long.` labels, space-separated DMS (`40 26 46 N`), decimal commas
+  - coordinates broken across **line breaks**
+- **Focused page view** — only pages containing detections are shown
+  (toggle *Show all pages* to see everything). Every hit is highlighted.
+- **Two-way jumping** — click a CSV row to jump to the highlight in the PDF;
+  click a highlight in the PDF to jump to its CSV row.
+- **Editable CSV preview** with header row:
+  - columns 1–2 are yours (headers editable); latitude/longitude live in
+    columns 3–4
+  - output as **DD**, **DMS**, or **Both** (DD in columns 3/4, DMS in 5/6) —
+    regardless of what the source PDF used
+  - anything you type into a coordinate cell is **auto-cleaned** to the chosen
+    format; unparseable input is kept but flagged red
+  - mass-entry for columns 1/2: fill a row range (e.g. rows 2–23) or the
+    current selection in one click; `Ctrl+D` copies the cell above
+  - row selection (shift/ctrl click the row numbers), add/delete rows
+- **CSV export** with UTF-8 BOM (Excel-safe degree symbols).
+- **✨ LLM Assist (bring your own API key)** — optionally send the PDF text to an
+  LLM to *verify* the extracted coordinates and *fill columns 1–2* from the
+  surrounding text (e.g. if a paper describes animals, put the animal in
+  column 1 and its colour in column 2 — rename the column headers and/or add
+  prompt instructions to tell it what you want):
+  - Providers: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek,
+    Qwen (Alibaba), Kimi (Moonshot), GLM (Zhipu), or any custom
+    OpenAI-compatible endpoint. Your key is stored locally and sent only to
+    the provider you pick.
+  - Choose to send only the pages with detected coordinates, or the full PDFs.
+  - Rows get a verdict badge: ✓ confirmed, ⚠ mismatch (click to apply the
+    suggested correction), ? not found.
+  - ⚠️ **Use at your own risk.** LLMs make mistakes and invent details.
+    Nothing it returns is ground truth — always verify against the PDFs.
+- **Daily update check** (plus a *Check for updates* button in the footer) —
+  compares against the latest GitHub release and links you there; nothing is
+  downloaded automatically.
+- **Windows install/uninstall wizard** — the `.exe` is a full NSIS assisted
+  installer (license page, install location, desktop/start-menu shortcuts,
+  clean uninstaller in *Apps & features*).
+
+## Download
+
+Grab the latest build from the [Releases](../../releases) page:
+
+| Platform | File |
+| --- | --- |
+| Windows | `CoordRippr-<version>-win-x64.exe` (NSIS installer) |
+| macOS | `CoordRippr-<version>-mac-<arch>.dmg` |
+| Ubuntu / Debian | `CoordRippr-<version>-linux-amd64.deb` |
+| Fedora / RHEL | `CoordRippr-<version>-linux-x86_64.rpm` |
+| Arch | `CoordRippr-<version>-linux-x64.pacman` |
+
+Builds are produced by the [GitHub Actions workflow](.github/workflows/build.yml);
+pushing a `v*` tag creates a release with all installers attached.
+
+### Web version (GitHub Pages)
+
+CoordRippr is plain JS under the hood, so it also runs entirely in the
+browser — no install, nothing uploaded (PDFs are processed locally in the
+page): **https://calebhendren.github.io/CoordRippr/**
+
+The [Pages workflow](.github/workflows/pages.yml) deploys it on every push to
+`main` (first run needs GitHub Pages enabled for the repo — the workflow
+attempts to enable it automatically; otherwise set *Settings → Pages → Source*
+to "GitHub Actions"). Web-version caveats:
+
+- Folder picking uses the File System Access API (Chrome/Edge); other browsers
+  fall back to a folder-upload prompt. Drag & drop works everywhere.
+- LLM Assist calls the provider straight from the browser, which some
+  providers restrict via CORS. Anthropic, OpenAI, and Gemini work; some others
+  may only work from the desktop app.
+
+## Usage
+
+1. **Open Folder…** (or *Open PDFs…* / drag files in). Scanning starts
+   immediately; the file list shows a hit count per PDF.
+2. Review the right panel: only pages with detections are shown, hits are
+   highlighted yellow. Hover a highlight to see the raw matched text.
+3. Fill in columns 1–2 (site names, notes, …). For repeated values use the
+   *Fill* bar: pick the column, a row range, a value → *Apply*.
+4. Pick the coordinate output format in the toolbar (DD / DMS / Both).
+5. Fix anything the parser got wrong — edits are auto-cleaned — and delete
+   false positives (the net is wide on purpose).
+6. Optional: **✨ LLM Assist…** — pick a provider, paste your API key, describe
+   what columns 1–2 should contain, and let it verify coordinates and fill the
+   columns. Then check its work; it's an assistant, not an oracle.
+7. **Export CSV…**
+
+> **Note:** detection works on the PDF *text layer*. Scanned/image-only PDFs
+> have no text to search — run OCR on them first.
+
+## Development
+
+```bash
+npm install        # needs network access to download Electron
+npm test           # parser/LLM/update unit tests + pdf.js integration test
+npm start          # run the app
+npm run web        # build the static browser version into dist-web/
+npm run dist       # package for the current platform
+```
+
+Useful bits:
+
+- `src/coords.js` — the tokenizer/parser/formatter. Start here to widen the net further.
+- `src/pdftext.js` — pdf.js text items → searchable string + match-to-rectangle mapping.
+- `tools/make-sample-pdf.mjs` — regenerates `test/fixtures/sample.pdf` (the messy two-column test document).
+- `build/icon.svg` — icon source; rasterize with:
+  ```bash
+  npm i --no-save sharp
+  node -e "require('sharp')('build/icon.svg').resize(1024,1024).png().toFile('build/icon.png')"
+  ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
