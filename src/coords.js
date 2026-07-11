@@ -1,0 +1,285 @@
+// CoordRippr coordinate parsing / cleaning / formatting.
+// Pure module: no DOM, no Electron. Used by the renderer and by node --test.
+//
+// Design: one deliberately wide regex finds *candidate* tokens (anything that
+// remotely resembles a coordinate), then parseToken() decides what the pieces
+// mean and pairTokens() assembles lat/lon pairs. False positives are tolerated
+// by design — the user can delete rows — but bare numbers only survive when
+// they pair up into a plausible lat/lon couple.
+
+// ---------------------------------------------------------------------------
+// Character classes. PDFs are sloppy: any of these can stand in for °, ' , ".
+// ---------------------------------------------------------------------------
+
+// ° º ˚ ◦ ᵒ ⁰ ∘ (letter o/O handled separately: only valid touching the digits)
+const DEG_MARKS = '°º˚◦ᵒ⁰∘';
+// ' ′ ’ ‘ ` ´ ʹ ʼ ˊ ᾿ ‛
+const MIN_MARKS = "'′’‘`´ʹʼˊ᾿‛";
+// " ″ ” “ ʺ 〃 ‶
+const SEC_MARKS = '"″”“ʺ〃‶';
+// − – — ‐ ‑ ‒ - (ASCII hyphen deliberately last: inside [+…] a mid-class
+// hyphen would silently become a huge character range)
+const MINUS = '−–—‐‑‒-';
+
+const D = `[${DEG_MARKS}]|[oO](?=[\\s ]{0,2}[\\d${MIN_MARKS}NSEWnsew])`;
+const M = `[${MIN_MARKS}]`;
+const S = `[${SEC_MARKS}]|[${MIN_MARKS}]{2}`;
+const SP = `[\\s ]{0,3}`; // may span a line break (coords get wrapped)
+const NUM = `\\d{1,3}(?:[.,]\\d+)?`;
+const HEMI_WORD =
+  '[Nn]orth|[Ss]outh|[Ee]ast|[Ww]est|[Ll]at(?:itude)?|[Ll]on(?:g(?:itude)?)?';
+
+// One candidate coordinate token. Everything after the leading number is
+// optional so the net stays wide; parseToken() applies the judgement.
+const TOKEN_SRC =
+  `(?:(?<wordpre>${HEMI_WORD})[.:]?${SP})?` +
+  `(?:(?<hemipre>[NSEW])[.]?${SP})?` +
+  `(?<sign>[+${MINUS}])?${SP}` +
+  `(?<![\\d.,])(?<deg>${NUM})(?![\\d])${SP}` +
+  `(?<degmark>${D})?${SP}` +
+  `(?:(?<![\\d.,])(?<min>\\d{1,2}(?:[.,]\\d+)?)(?![\\d])${SP}` +
+  `(?:(?<secmark1>${S})|(?<minmark>${M}))?${SP}` +
+  `(?:(?<![\\d.,])(?<sec>\\d{1,2}(?:[.,]\\d+)?)(?![\\d])${SP}(?<secmark2>${S})?)?` +
+  `)?` +
+  `(?:${SP}(?:(?<hemipost>[NSEWnsew])(?![A-Za-z0-9])|(?<hemiword>${HEMI_WORD})(?![A-Za-z])))?`;
+
+const TOKEN_REGEX = () => new RegExp(TOKEN_SRC, 'dg');
+
+const HEMI_MAP = {
+  n: 'N', s: 'S', e: 'E', w: 'W',
+  north: 'N', south: 'S', east: 'E', west: 'W',
+  lat: null, latitude: null, lon: null, long: null, longitude: null,
+};
+
+function num(str) {
+  if (str == null) return null;
+  return parseFloat(str.replace(',', '.'));
+}
+
+// ---------------------------------------------------------------------------
+// Token parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Interpret one regex match. Returns null when the match is just a number
+ * with no coordinate-ish evidence at all (those may still be used later by
+ * the bare-decimal-pair rule, so we return a "weak" token instead of null
+ * when the number merely *could* be a decimal degree).
+ */
+function parseToken(m, text) {
+  const g = m.groups;
+  const start = m.index;
+  const end = m.index + m[0].length;
+  const raw = m[0];
+
+  let deg = num(g.deg);
+  let min = num(g.min);
+  let sec = num(g.sec);
+  if (deg == null || Number.isNaN(deg)) return null;
+
+  // Letter 'o' as a degree mark is only credible when it touches the digits:
+  // "12o30'" yes — "12 o'clock" no.
+  let hasDegMark = !!g.degmark;
+  if (hasDegMark && /^[oO]$/.test(g.degmark)) {
+    const degEnd = m.indices.groups.deg[1];
+    const markStart = m.indices.groups.degmark[0];
+    if (markStart !== degEnd) hasDegMark = false;
+  }
+
+  const hasMinMark = !!g.minmark;
+  const hasSecMark = !!(g.secmark1 || g.secmark2);
+  let hemi = null;
+  for (const h of [g.hemipre, g.hemipost, g.hemiword, g.wordpre]) {
+    if (h) {
+      const mapped = HEMI_MAP[h.toLowerCase()];
+      if (mapped) { hemi = mapped; break; }
+    }
+  }
+  // "lat"/"long" words pin the axis without giving a sign.
+  let axisWord = null;
+  for (const w0 of [g.hemiword, g.wordpre]) {
+    if (!w0) continue;
+    const w = w0.toLowerCase();
+    if (w.startsWith('lat')) { axisWord = 'lat'; break; }
+    if (w.startsWith('lon')) { axisWord = 'lon'; break; }
+  }
+
+  const negative = !!g.sign && g.sign !== '+';
+  const degHasFraction = /[.,]/.test(g.deg);
+
+  // Structure sanity: decimal degrees followed by minutes is nonsense —
+  // drop the tail and treat as plain DD.
+  if (degHasFraction && min != null) { min = null; sec = null; }
+  // Range sanity for DMS parts.
+  if (min != null && min >= 60) return null;
+  if (sec != null && sec >= 60) return null;
+
+  // Evidence scoring: what makes this look like a coordinate?
+  const evidence =
+    (hasDegMark ? 2 : 0) +
+    (hemi ? 2 : 0) +
+    (axisWord ? 1 : 0) +
+    (hasMinMark || hasSecMark ? 1 : 0) +
+    (min != null && sec != null ? 1 : 0);
+
+  let dd = Math.abs(deg) + (min || 0) / 60 + (sec || 0) / 3600;
+  if (negative || deg < 0) dd = -dd;
+  if (hemi === 'S' || hemi === 'W') dd = -Math.abs(dd);
+
+  if (Math.abs(dd) > 180) return null;
+
+  let axis = null;
+  if (hemi === 'N' || hemi === 'S') axis = 'lat';
+  else if (hemi === 'E' || hemi === 'W') axis = 'lon';
+  else if (axisWord) axis = axisWord;
+  if (axis === 'lat' && Math.abs(dd) > 90) return null;
+
+  const isDMS = min != null;
+  // Strong tokens stand on their own. Weak tokens are bare numbers that only
+  // count if they pair up with a partner.
+  let strength;
+  if (evidence >= 2) strength = 'strong';
+  else if (evidence === 1 && (degHasFraction || isDMS)) strength = 'medium';
+  else if (degHasFraction && g.deg.split(/[.,]/)[1].length >= 2) strength = 'weak';
+  else return null; // bare integer with no evidence: not even wide-net worthy
+
+  return {
+    start, end, raw: raw.trim(),
+    deg: Math.abs(deg), min, sec, hemi, negative: dd < 0,
+    dd, axis, isDMS, strength,
+    hasDegMark, hasMinMark, hasSecMark,
+  };
+}
+
+/** Find every candidate token in a block of text. */
+export function findTokens(text) {
+  const re = TOKEN_REGEX();
+  const tokens = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m[0].trim() === '') { re.lastIndex = m.index + 1; continue; }
+    const t = parseToken(m, text);
+    if (t) tokens.push(t);
+    // Continue scanning right after the matched degrees number so an
+    // absorbed neighbour can still be found if parseToken rejected this one.
+    if (!t) re.lastIndex = m.indices.groups.deg[1];
+  }
+  return tokens;
+}
+
+// ---------------------------------------------------------------------------
+// Pairing
+// ---------------------------------------------------------------------------
+
+const MAX_GAP = 40; // chars between the two halves of a pair
+
+function gapIsClean(text, a, b) {
+  const between = text.slice(a.end, b.start);
+  if (between.length > MAX_GAP) return false;
+  if (/\d/.test(between)) return false; // another number lives in between
+  // separators / connective tissue only
+  return /^[\s ,;:/|()\[\]–—-]*(?:and|by|to|x)?[\s ,;:/|()\[\]–—-]*$/i.test(between);
+}
+
+function compatible(a, b) {
+  if (a.axis && b.axis && a.axis === b.axis) return false;
+  return true;
+}
+
+/**
+ * Pair tokens into {lat, lon} coordinates. Unpaired strong tokens are kept
+ * as half-empty pairs; unpaired weak tokens are discarded.
+ */
+export function pairTokens(tokens, text) {
+  const pairs = [];
+  const used = new Set();
+
+  for (let i = 0; i < tokens.length; i++) {
+    if (used.has(i)) continue;
+    const a = tokens[i];
+    const b = tokens[i + 1];
+
+    if (b && !used.has(i + 1) && gapIsClean(text, a, b) && compatible(a, b)) {
+      // Weak tokens must both be plausible decimal degrees to pair.
+      const weakPair = a.strength === 'weak' && b.strength === 'weak';
+      const anyStrong = a.strength === 'strong' || b.strength === 'strong';
+      const ok = anyStrong || a.strength === 'medium' || b.strength === 'medium' || weakPair;
+      if (ok) {
+        let lat = a, lon = b;
+        if (a.axis === 'lon' || b.axis === 'lat') { lat = b; lon = a; }
+        // No axis info: first is lat by convention, but ranges can veto.
+        if (!a.axis && !b.axis) {
+          if (Math.abs(a.dd) > 90 && Math.abs(b.dd) <= 90) { lat = b; lon = a; }
+        }
+        if (Math.abs(lat.dd) <= 90 && Math.abs(lon.dd) <= 180) {
+          pairs.push({ lat, lon });
+          used.add(i); used.add(i + 1);
+          continue;
+        }
+      }
+    }
+
+    // Lone token: keep only if it can stand on its own.
+    if (a.strength === 'strong') {
+      if (a.axis === 'lon' || Math.abs(a.dd) > 90) pairs.push({ lat: null, lon: a });
+      else pairs.push({ lat: a, lon: null });
+      used.add(i);
+    }
+  }
+  return pairs;
+}
+
+/** One-call helper: text in, coordinate pairs out. */
+export function extractCoordinates(text) {
+  return pairTokens(findTokens(text), text);
+}
+
+// ---------------------------------------------------------------------------
+// Cleaning / formatting
+// ---------------------------------------------------------------------------
+
+/** Parse a single user-typed cell value into decimal degrees (or null). */
+export function parseSingle(text, axis = null) {
+  if (text == null) return null;
+  const s = String(text).trim();
+  if (s === '') return null;
+  // Fast path: plain float
+  if (/^[+-]?\d{1,3}(\.\d+)?$/.test(s)) {
+    const v = parseFloat(s);
+    if (Math.abs(v) <= (axis === 'lat' ? 90 : 180)) return v;
+    return null;
+  }
+  const tokens = findTokens(s);
+  if (tokens.length === 0) return null;
+  const t = tokens[0];
+  if (axis === 'lat' && Math.abs(t.dd) > 90) return null;
+  if (Math.abs(t.dd) > 180) return null;
+  return t.dd;
+}
+
+/** Format decimal degrees as a clean DD string. */
+export function formatDD(dd) {
+  if (dd == null || Number.isNaN(dd)) return '';
+  return dd.toFixed(6).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '.0');
+}
+
+/** Format decimal degrees as a clean DMS string, e.g. 41°24'12.20"N */
+export function formatDMS(dd, axis) {
+  if (dd == null || Number.isNaN(dd)) return '';
+  const hemi = axis === 'lon' ? (dd < 0 ? 'W' : 'E') : (dd < 0 ? 'S' : 'N');
+  let abs = Math.abs(dd);
+  let deg = Math.floor(abs);
+  let minFloat = (abs - deg) * 60;
+  let min = Math.floor(minFloat);
+  let sec = (minFloat - min) * 60;
+  // Guard against 59.999999 rounding up.
+  if (Number(sec.toFixed(2)) >= 60) { sec = 0; min += 1; }
+  if (min >= 60) { min = 0; deg += 1; }
+  const secStr = sec.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
+  return `${deg}°${String(min).padStart(2, '0')}'${secStr.padStart(2, '0')}"${hemi}`;
+}
+
+/** Format for a given output mode. */
+export function formatCoord(dd, axis, mode) {
+  return mode === 'dms' ? formatDMS(dd, axis) : formatDD(dd);
+}

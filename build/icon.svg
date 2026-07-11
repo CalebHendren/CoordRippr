@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="bg" cx="35%" cy="28%" r="90%">
+      <stop offset="0%" stop-color="#1e2a44"/>
+      <stop offset="60%" stop-color="#131a2b"/>
+      <stop offset="100%" stop-color="#0a0e18"/>
+    </radialGradient>
+    <radialGradient id="sphere" cx="38%" cy="30%" r="85%">
+      <stop offset="0%" stop-color="#7dd3fc"/>
+      <stop offset="45%" stop-color="#0ea5e9"/>
+      <stop offset="80%" stop-color="#0369a1"/>
+      <stop offset="100%" stop-color="#075985"/>
+    </radialGradient>
+    <linearGradient id="steel" x1="0%" y1="0%" x2="100%" y2="60%">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="45%" stop-color="#cbd5e1"/>
+      <stop offset="75%" stop-color="#94a3b8"/>
+      <stop offset="100%" stop-color="#64748b"/>
+    </linearGradient>
+    <linearGradient id="wood" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#5c3a1a"/>
+      <stop offset="50%" stop-color="#8b5a2b"/>
+      <stop offset="100%" stop-color="#a9713a"/>
+    </linearGradient>
+    <clipPath id="globeClip">
+      <circle cx="500" cy="600" r="268"/>
+    </clipPath>
+  </defs>
+
+  <!-- background tile -->
+  <rect x="8" y="8" width="1008" height="1008" rx="196" fill="url(#bg)"/>
+  <rect x="8" y="8" width="1008" height="1008" rx="196" fill="none"
+        stroke="#2c3a5c" stroke-width="6" opacity="0.7"/>
+
+  <!-- globe -->
+  <circle cx="500" cy="600" r="268" fill="url(#sphere)"/>
+  <g clip-path="url(#globeClip)" stroke="#e0f2fe" stroke-width="7" fill="none" opacity="0.55">
+    <!-- meridians -->
+    <ellipse cx="500" cy="600" rx="92" ry="268"/>
+    <ellipse cx="500" cy="600" rx="184" ry="268"/>
+    <line x1="500" y1="332" x2="500" y2="868"/>
+    <!-- parallels -->
+    <ellipse cx="500" cy="600" rx="268" ry="86"/>
+    <ellipse cx="500" cy="466" rx="228" ry="60"/>
+    <ellipse cx="500" cy="734" rx="228" ry="60"/>
+  </g>
+  <circle cx="500" cy="600" r="268" fill="none" stroke="#bae6fd" stroke-width="10" opacity="0.85"/>
+  <!-- specular highlight -->
+  <ellipse cx="404" cy="472" rx="118" ry="74" fill="#ffffff" opacity="0.18"
+           transform="rotate(-28 404 472)"/>
+
+  <!-- scythe: snath (handle) sweeping across in front of the globe -->
+  <line x1="288" y1="952" x2="806" y2="252" stroke="#3d2712" stroke-width="46" stroke-linecap="round"/>
+  <line x1="288" y1="952" x2="806" y2="252" stroke="url(#wood)" stroke-width="34" stroke-linecap="round"/>
+  <!-- grip peg -->
+  <line x1="518" y1="640" x2="596" y2="686" stroke="#3d2712" stroke-width="34" stroke-linecap="round"/>
+  <line x1="520" y1="642" x2="590" y2="682" stroke="url(#wood)" stroke-width="24" stroke-linecap="round"/>
+
+  <!-- blade collar -->
+  <circle cx="806" cy="252" r="30" fill="#475569" stroke="#1e293b" stroke-width="6"/>
+
+  <!-- blade: crescent sweeping left over the globe -->
+  <path d="M 812 268
+           C 668 106, 420 62, 196 170
+           C 400 148, 606 208, 776 322
+           Z"
+        fill="url(#steel)" stroke="#334155" stroke-width="8" stroke-linejoin="round"/>
+  <!-- blade edge glint -->
+  <path d="M 216 168
+           C 420 80, 640 118, 800 260"
+        fill="none" stroke="#ffffff" stroke-width="7" opacity="0.5" stroke-linecap="round"/>
+</svg>
