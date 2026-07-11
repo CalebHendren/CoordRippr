@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -100,6 +100,35 @@ ipcMain.handle('save-csv', async (_e, { defaultName, content }) => {
   await fs.writeFile(res.filePath, '\uFEFF' + content, 'utf8');
   return res.filePath;
 });
+
+// Generic HTTPS fetch proxied through the main process: used for LLM API
+// calls (avoids renderer CORS restrictions) and the GitHub release check.
+ipcMain.handle('net-fetch', async (_e, { url, method = 'GET', headers = {}, body = null }) => {
+  if (typeof url !== 'string' || !/^https:\/\//i.test(url)) {
+    throw new Error('Only https:// URLs are allowed');
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 300000);
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { 'user-agent': `CoordRippr/${app.getVersion()}`, ...headers },
+      body: body ?? undefined,
+      signal: ctrl.signal,
+    });
+    return { ok: res.ok, status: res.status, text: await res.text() };
+  } catch (err) {
+    return { ok: false, status: 0, text: '', error: err && err.message ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+ipcMain.handle('open-external', (_e, url) => {
+  if (typeof url === 'string' && /^https:\/\//i.test(url)) shell.openExternal(url);
+});
+
+ipcMain.handle('get-version', () => app.getVersion());
 
 app.whenReady().then(() => {
   createWindow();

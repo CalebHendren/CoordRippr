@@ -4,6 +4,14 @@
 import * as pdfjsLib from '../node_modules/pdfjs-dist/build/pdf.min.mjs';
 import { extractCoordinates, parseSingle, formatDD, formatDMS } from './coords.js';
 import { buildPageText, rectsForRange } from './pdftext.js';
+import {
+  PROVIDERS, buildRequest, extractText, parseResultsJson, normalizeResult,
+  buildPrompt, chunkWork,
+} from './llm.js';
+import { RELEASES_API, RELEASES_PAGE, KOFI_URL, isNewer, isDue } from './updates.js';
+
+const api = window.coordrippr;
+const IS_WEB = api.platform === 'web';
 
 const PDFJS_BASE = new URL('../node_modules/pdfjs-dist/', import.meta.url);
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('build/pdf.worker.min.mjs', PDFJS_BASE).href;
@@ -78,7 +86,7 @@ async function loadFiles(specs) {
     state.files.push(file);
     try {
       setStatus(`Scanning ${spec.name} (${done}/${specs.length})…`, true);
-      const data = spec.data || (await window.coordrippr.readFile(spec.path));
+      const data = spec.data || (await api.readFile(spec.path));
       file.doc = await pdfjsLib.getDocument({ data, ...PDF_OPEN_OPTS }).promise;
       file.numPages = file.doc.numPages;
       for (let p = 1; p <= file.numPages; p++) {
@@ -411,12 +419,27 @@ function buildRowEl(row, cols) {
 
   const tdSrc = document.createElement('td');
   tdSrc.className = 'srcinfo';
+  if (row.llm) {
+    const badge = document.createElement('span');
+    const verdict = row.llm.verdict || 'not_found';
+    badge.className = `llm-badge ${verdict}`;
+    badge.textContent = verdict === 'ok' ? '✓' : verdict === 'mismatch' ? '⚠' : '?';
+    badge.dataset.row = row.id;
+    let tip = `LLM verdict: ${verdict}`;
+    if (row.llm.note) tip += `\n${row.llm.note}`;
+    if (verdict === 'mismatch' && (row.llm.lat != null || row.llm.lon != null)) {
+      tip += `\nSuggested: ${row.llm.lat ?? '(keep lat)'}, ${row.llm.lon ?? '(keep lon)'}\nClick to apply the suggestion.`;
+    }
+    tip += '\n(LLM output — verify yourself)';
+    badge.title = tip;
+    tdSrc.appendChild(badge);
+  }
   if (row.src) {
     const f = state.files.find((x) => x.id === row.src.fileId);
-    tdSrc.textContent = `${f ? f.name : '?'} p.${row.src.pageNum}`;
+    tdSrc.appendChild(document.createTextNode(`${f ? f.name : '?'} p.${row.src.pageNum}`));
     tdSrc.title = 'Click to show in PDF';
   } else {
-    tdSrc.textContent = '—';
+    tdSrc.appendChild(document.createTextNode('—'));
   }
   tr.appendChild(tdSrc);
   return tr;
@@ -478,6 +501,26 @@ tbodyEl.addEventListener('change', (e) => {
 
 // Click a row -> make it active and jump to its PDF spot.
 tbodyEl.addEventListener('click', (e) => {
+  // Mismatch badge: offer to apply the LLM's suggested coordinates.
+  if (e.target.classList.contains('llm-badge')) {
+    const row = state.rows.find((r) => r.id === e.target.dataset.row);
+    if (row?.llm?.verdict === 'mismatch' && (row.llm.lat != null || row.llm.lon != null)) {
+      const ok = confirm(
+        `Apply the LLM's suggested coordinates to this row?\n\n` +
+        `Latitude:  ${row.llm.lat ?? '(keep current)'}\n` +
+        `Longitude: ${row.llm.lon ?? '(keep current)'}\n\n` +
+        `${row.llm.note || ''}\n\nLLM output can be wrong — verify against the PDF.`
+      );
+      if (ok) {
+        if (row.llm.lat != null) { row.lat = row.llm.lat; row.latRaw = null; }
+        if (row.llm.lon != null) { row.lon = row.llm.lon; row.lonRaw = null; }
+        row.llm = { ...row.llm, verdict: 'ok', note: 'LLM suggestion applied — verify manually.' };
+        renderTable();
+      }
+      return;
+    }
+  }
+
   const tr = e.target.closest('tr');
   if (!tr) return;
   const rowId = tr.dataset.row;
@@ -526,17 +569,23 @@ tbodyEl.addEventListener('keydown', (e) => {
 // Toolbar / tools
 // ---------------------------------------------------------------------------
 
+// Electron returns file paths (strings); the web shim returns {name, data} specs.
+function toSpecs(files) {
+  return files.map((f) =>
+    typeof f === 'string' ? { path: f, name: f.split(/[\\/]/).pop() } : f);
+}
+
 $('#btn-open-folder').addEventListener('click', async () => {
-  const res = await window.coordrippr.chooseFolder();
+  const res = await api.chooseFolder();
   if (!res) return;
   if (res.files.length === 0) { setStatus('No PDFs found in that folder.'); return; }
-  await loadFiles(res.files.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() })));
+  await loadFiles(toSpecs(res.files));
 });
 
 $('#btn-open-files').addEventListener('click', async () => {
-  const res = await window.coordrippr.choosePdfs();
+  const res = await api.choosePdfs();
   if (!res) return;
-  await loadFiles(res.files.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() })));
+  await loadFiles(toSpecs(res.files));
 });
 
 for (const radio of document.querySelectorAll('input[name="fmt"]')) {
@@ -640,7 +689,7 @@ function buildCsv() {
 
 $('#btn-export').addEventListener('click', async () => {
   if (state.rows.length === 0) { setStatus('Nothing to export yet.'); return; }
-  const saved = await window.coordrippr.saveCsv({
+  const saved = await api.saveCsv({
     defaultName: 'coordinates.csv',
     content: buildCsv(),
   });
@@ -675,10 +724,281 @@ document.addEventListener('drop', async (e) => {
   window.addEventListener('mouseup', () => { dragging = false; document.body.style.cursor = ''; });
 }
 
-window.coordrippr.onAutoload((paths) => {
+api.onAutoload((paths) => {
   loadFiles(paths.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() })));
 });
 
+// ---------------------------------------------------------------------------
+// LLM Assist
+// ---------------------------------------------------------------------------
+
+const llmDialog = $('#llm-dialog');
+const LLM_PREFS_KEY = 'coordrippr.llm.prefs';
+let llmRunning = false;
+let llmAbort = false;
+
+function llmPrefs() {
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(LLM_PREFS_KEY)) || {}; } catch { /* fresh */ }
+  p.keys = p.keys || {};
+  p.models = p.models || {};
+  p.urls = p.urls || {};
+  return p;
+}
+
+function llmStatus(msg) { $('#llm-status').textContent = msg; }
+
+function syncLlmProviderFields() {
+  const prefs = llmPrefs();
+  const id = $('#llm-provider').value;
+  const p = PROVIDERS[id];
+  $('#llm-model').value = prefs.models[id] ?? p.model;
+  $('#llm-url').value = prefs.urls[id] ?? p.url;
+  $('#llm-key').value = prefs.keys[id] ?? '';
+  $('#llm-key').placeholder = p.keyHint || '';
+}
+
+function initLlmDialog() {
+  const sel = $('#llm-provider');
+  sel.innerHTML = Object.entries(PROVIDERS)
+    .map(([id, p]) => `<option value="${id}">${escapeHtml(p.label)}</option>`)
+    .join('');
+  const prefs = llmPrefs();
+  if (prefs.provider && PROVIDERS[prefs.provider]) sel.value = prefs.provider;
+  const scopeRadio = document.querySelector(`input[name="llm-scope"][value="${prefs.scope}"]`);
+  if (scopeRadio) scopeRadio.checked = true;
+  if (prefs.extra) $('#llm-extra').value = prefs.extra;
+  if (prefs.verify != null) $('#llm-verify').checked = prefs.verify;
+  if (prefs.fill != null) $('#llm-fill').checked = prefs.fill;
+  if (prefs.overwrite != null) $('#llm-overwrite').checked = prefs.overwrite;
+  syncLlmProviderFields();
+  sel.addEventListener('change', syncLlmProviderFields);
+}
+
+function collectLlmSettings() {
+  const id = $('#llm-provider').value;
+  const s = {
+    provider: id,
+    kind: PROVIDERS[id].kind,
+    model: $('#llm-model').value.trim(),
+    url: $('#llm-url').value.trim(),
+    key: $('#llm-key').value.trim(),
+    scope: document.querySelector('input[name="llm-scope"]:checked').value,
+    extra: $('#llm-extra').value,
+    verify: $('#llm-verify').checked,
+    fill: $('#llm-fill').checked,
+    overwrite: $('#llm-overwrite').checked,
+  };
+  const prefs = llmPrefs();
+  prefs.provider = id;
+  prefs.models[id] = s.model;
+  prefs.urls[id] = s.url;
+  prefs.keys[id] = s.key;
+  prefs.scope = s.scope;
+  prefs.extra = s.extra;
+  prefs.verify = s.verify;
+  prefs.fill = s.fill;
+  prefs.overwrite = s.overwrite;
+  localStorage.setItem(LLM_PREFS_KEY, JSON.stringify(prefs));
+  return s;
+}
+
+// Rows grouped per file, with the page numbers to send along.
+function buildLlmWork(scope) {
+  const work = [];
+  for (const file of state.files) {
+    if (file.error) continue;
+    const rows = [];
+    state.rows.forEach((r, i) => {
+      if (r.src && r.src.fileId === file.id) {
+        rows.push({
+          id: r.id, num: i + 1, c1: r.c1, c2: r.c2,
+          lat: r.lat != null ? Number(r.lat.toFixed(6)) : null,
+          lon: r.lon != null ? Number(r.lon.toFixed(6)) : null,
+          file: file.name, page: r.src.pageNum,
+        });
+      }
+    });
+    if (rows.length === 0) continue;
+    const pageNums = file.pages
+      .filter((p) => scope === 'all' || p.dets.length > 0)
+      .map((p) => p.num);
+    work.push({ file, rows, pageNums });
+  }
+  return work;
+}
+
+async function pageTextFor(file, pageNum) {
+  const pageRec = file.pages.find((p) => p.num === pageNum);
+  if (!pageRec) return '';
+  const tc = await pageRec.proxy.getTextContent();
+  return buildPageText(tc).text;
+}
+
+function applyLlmResults(results, s, counts) {
+  for (const res of results) {
+    const row = state.rows.find((r) => r.id === res.row);
+    if (!row) continue;
+    if (s.verify && res.verdict) {
+      row.llm = { verdict: res.verdict, note: res.note, lat: res.lat, lon: res.lon };
+      counts[res.verdict]++;
+    }
+    if (s.fill) {
+      if (res.col1 && (s.overwrite || !String(row.c1 || '').trim())) { row.c1 = res.col1; counts.filled++; }
+      if (res.col2 && (s.overwrite || !String(row.c2 || '').trim())) { row.c2 = res.col2; counts.filled++; }
+    }
+  }
+}
+
+$('#btn-llm').addEventListener('click', () => {
+  llmStatus('');
+  llmDialog.showModal();
+});
+
+$('#llm-run').addEventListener('click', async () => {
+  if (llmRunning) {
+    llmAbort = true;
+    llmStatus('Stopping after the current request…');
+    return;
+  }
+  const s = collectLlmSettings();
+  if (!s.url) return llmStatus('Enter an endpoint URL.');
+  if (!s.model) return llmStatus('Enter a model name.');
+  if (!s.key && s.provider !== 'custom') return llmStatus('Enter your API key.');
+  if (!s.verify && !s.fill) return llmStatus('Pick at least one task.');
+  const work = buildLlmWork(s.scope);
+  if (work.length === 0) return llmStatus('No rows with a PDF source to process — scan some PDFs first. (Manually added rows are skipped.)');
+
+  llmRunning = true;
+  llmAbort = false;
+  $('#llm-run').textContent = 'Stop';
+  const counts = { ok: 0, mismatch: 0, not_found: 0, filled: 0, errors: [] };
+
+  try {
+    llmStatus('Extracting page text…');
+    const chunks = [];
+    for (const w of work) {
+      const pages = [];
+      for (const num of w.pageNums) {
+        pages.push({ file: w.file.name, page: num, text: await pageTextFor(w.file, num) });
+      }
+      chunks.push(...chunkWork(pages, w.rows));
+    }
+
+    for (let n = 0; n < chunks.length; n++) {
+      if (llmAbort) break;
+      const chunk = chunks[n];
+      llmStatus(`Request ${n + 1}/${chunks.length} — ${chunk.rows.length} row${chunk.rows.length === 1 ? '' : 's'} from ${chunk.pages[0].file}…`);
+      const { system, user } = buildPrompt({
+        rows: chunk.rows, pages: chunk.pages, headers: state.headers,
+        extra: s.extra, verify: s.verify, fill: s.fill,
+      });
+      const req = buildRequest({
+        kind: s.kind, url: s.url, model: s.model, apiKey: s.key,
+        system, user, browser: IS_WEB,
+      });
+      const res = await api.netFetch(req);
+      if (res.error) throw new Error(res.error);
+      if (!res.ok) {
+        let detail = (res.text || '').slice(0, 300);
+        try { extractText(s.kind, res.text); } catch (e) { detail = e.message; }
+        counts.errors.push(`HTTP ${res.status}: ${detail}`);
+        if (res.status === 401 || res.status === 403) break; // bad key: no point continuing
+        continue;
+      }
+      const results = parseResultsJson(extractText(s.kind, res.text))
+        .map(normalizeResult)
+        .filter(Boolean);
+      if (results.length === 0) {
+        counts.errors.push(`Request ${n + 1}: the model returned no parseable JSON results.`);
+        continue;
+      }
+      applyLlmResults(results, s, counts);
+      renderTable();
+    }
+  } catch (err) {
+    counts.errors.push(err && err.message ? err.message : String(err));
+  }
+
+  llmRunning = false;
+  $('#llm-run').textContent = 'Run';
+  const parts = [];
+  if (s.verify) parts.push(`verified ${counts.ok} ✓ · ${counts.mismatch} ⚠ mismatch · ${counts.not_found} ? not found`);
+  if (s.fill) parts.push(`${counts.filled} cell${counts.filled === 1 ? '' : 's'} filled`);
+  let msg = `${llmAbort ? 'Stopped early — ' : 'Done — '}${parts.join('; ')}.`;
+  if (counts.errors.length) msg += `\nProblems:\n• ${counts.errors.slice(0, 5).join('\n• ')}`;
+  msg += '\n⚠️ LLM output is not ground truth — verify it against the PDFs yourself.';
+  llmStatus(msg);
+  refreshCounts();
+});
+
+// ---------------------------------------------------------------------------
+// Ko-fi, version display & release checking
+// ---------------------------------------------------------------------------
+
+$('#btn-kofi').addEventListener('click', () => api.openExternal(KOFI_URL));
+
+const UPDATE_TS_KEY = 'coordrippr.lastUpdateCheck';
+let appVersion = null;
+
+async function checkForUpdates(manual) {
+  if (!appVersion) return;
+  if (manual) setStatus('Checking for updates…');
+  localStorage.setItem(UPDATE_TS_KEY, String(Date.now()));
+  const res = await api.netFetch({
+    url: RELEASES_API,
+    headers: { accept: 'application/vnd.github+json' },
+  });
+  if (!res.ok) {
+    if (manual) {
+      setStatus(res.status === 404
+        ? 'No releases have been published yet.'
+        : `Update check failed (${res.error || `HTTP ${res.status}`}).`);
+    }
+    return;
+  }
+  let tag = null;
+  let url = RELEASES_PAGE;
+  try {
+    const data = JSON.parse(res.text);
+    tag = data.tag_name;
+    if (data.html_url) url = data.html_url;
+  } catch { /* malformed response — treat as no update */ }
+  if (tag && isNewer(tag, appVersion)) {
+    const chip = $('#update-chip');
+    chip.textContent = `⬆ ${tag} available`;
+    chip.classList.remove('hidden');
+    chip.onclick = () => api.openExternal(url);
+    if (manual) setStatus(`Update available: ${tag} — click the green chip to download.`);
+  } else if (manual) {
+    setStatus(`CoordRippr v${appVersion} is up to date.`);
+  }
+}
+
+$('#btn-check-updates').addEventListener('click', () => checkForUpdates(true));
+
+async function initVersionAndUpdates() {
+  try { appVersion = await api.getVersion(); } catch { appVersion = null; }
+  if (!appVersion) {
+    // Web build: nothing to update.
+    $('#btn-check-updates').classList.add('hidden');
+    $('#app-version').textContent = 'web';
+    return;
+  }
+  $('#app-version').textContent = `v${appVersion}`;
+  // Daily check: once on startup if due, then re-tested hourly.
+  if (isDue(localStorage.getItem(UPDATE_TS_KEY))) checkForUpdates(false);
+  setInterval(() => {
+    if (isDue(localStorage.getItem(UPDATE_TS_KEY))) checkForUpdates(false);
+  }, 60 * 60 * 1000);
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+initLlmDialog();
+initVersionAndUpdates();
 renderTable();
 setZoom(state.zoom);
 setStatus('Ready. Open a folder of PDFs to begin.');

@@ -5,6 +5,10 @@ articles, reports, field notes — two-column layouts welcome) and it scans ever
 page for anything that remotely resembles a latitude/longitude, highlights the
 hits on the page, and builds a clean, editable CSV.
 
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support%20development-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/calebhendren)
+
+If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-fi.com/calebhendren) ☕
+
 ## Features
 
 - **Batch scanning** — open a folder and every PDF in it (recursively) is scanned.
@@ -31,6 +35,26 @@ hits on the page, and builds a clean, editable CSV.
     current selection in one click; `Ctrl+D` copies the cell above
   - row selection (shift/ctrl click the row numbers), add/delete rows
 - **CSV export** with UTF-8 BOM (Excel-safe degree symbols).
+- **✨ LLM Assist (bring your own API key)** — optionally send the PDF text to an
+  LLM to *verify* the extracted coordinates and *fill columns 1–2* from the
+  surrounding text (e.g. if a paper describes animals, put the animal in
+  column 1 and its colour in column 2 — rename the column headers and/or add
+  prompt instructions to tell it what you want):
+  - Providers: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek,
+    Qwen (Alibaba), Kimi (Moonshot), GLM (Zhipu), or any custom
+    OpenAI-compatible endpoint. Your key is stored locally and sent only to
+    the provider you pick.
+  - Choose to send only the pages with detected coordinates, or the full PDFs.
+  - Rows get a verdict badge: ✓ confirmed, ⚠ mismatch (click to apply the
+    suggested correction), ? not found.
+  - ⚠️ **Use at your own risk.** LLMs make mistakes and invent details.
+    Nothing it returns is ground truth — always verify against the PDFs.
+- **Daily update check** (plus a *Check for updates* button in the footer) —
+  compares against the latest GitHub release and links you there; nothing is
+  downloaded automatically.
+- **Windows install/uninstall wizard** — the `.exe` is a full NSIS assisted
+  installer (license page, install location, desktop/start-menu shortcuts,
+  clean uninstaller in *Apps & features*).
 
 ## Download
 
@@ -47,6 +71,23 @@ Grab the latest build from the [Releases](../../releases) page:
 Builds are produced by the [GitHub Actions workflow](.github/workflows/build.yml);
 pushing a `v*` tag creates a release with all installers attached.
 
+### Web version (GitHub Pages)
+
+CoordRippr is plain JS under the hood, so it also runs entirely in the
+browser — no install, nothing uploaded (PDFs are processed locally in the
+page): **https://calebhendren.github.io/CoordRippr/**
+
+The [Pages workflow](.github/workflows/pages.yml) deploys it on every push to
+`main` (first run needs GitHub Pages enabled for the repo — the workflow
+attempts to enable it automatically; otherwise set *Settings → Pages → Source*
+to "GitHub Actions"). Web-version caveats:
+
+- Folder picking uses the File System Access API (Chrome/Edge); other browsers
+  fall back to a folder-upload prompt. Drag & drop works everywhere.
+- LLM Assist calls the provider straight from the browser, which some
+  providers restrict via CORS. Anthropic, OpenAI, and Gemini work; some others
+  may only work from the desktop app.
+
 ## Usage
 
 1. **Open Folder…** (or *Open PDFs…* / drag files in). Scanning starts
@@ -58,7 +99,10 @@ pushing a `v*` tag creates a release with all installers attached.
 4. Pick the coordinate output format in the toolbar (DD / DMS / Both).
 5. Fix anything the parser got wrong — edits are auto-cleaned — and delete
    false positives (the net is wide on purpose).
-6. **Export CSV…**
+6. Optional: **✨ LLM Assist…** — pick a provider, paste your API key, describe
+   what columns 1–2 should contain, and let it verify coordinates and fill the
+   columns. Then check its work; it's an assistant, not an oracle.
+7. **Export CSV…**
 
 > **Note:** detection works on the PDF *text layer*. Scanned/image-only PDFs
 > have no text to search — run OCR on them first.
@@ -67,8 +111,9 @@ pushing a `v*` tag creates a release with all installers attached.
 
 ```bash
 npm install        # needs network access to download Electron
-npm test           # parser unit tests + pdf.js integration test
+npm test           # parser/LLM/update unit tests + pdf.js integration test
 npm start          # run the app
+npm run web        # build the static browser version into dist-web/
 npm run dist       # package for the current platform
 ```
 
