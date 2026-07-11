@@ -31,6 +31,7 @@
     </div>
     <div class="tb-spacer"></div>
     <div class="tb-group">
+      <button id="btn-llm" title="Verify coordinates and fill columns 1–2 with an LLM (your own API key)">✨ LLM Assist…</button>
       <button id="btn-export" class="primary">Export CSV…</button>
     </div>
   </header>
@@ -84,8 +85,66 @@
     </section>
   </main>
 
-  <footer id="status">Ready.</footer>
+  <footer id="footer">
+    <div id="status">Ready.</div>
+    <div id="footer-right">
+      <span id="update-chip" class="hidden" role="button" title="Open the releases page"></span>
+      <span id="app-version" class="muted"></span>
+      <button id="btn-check-updates" class="linkish" title="Check GitHub for a newer release">Check for updates</button>
+      <button id="btn-kofi" class="linkish" title="Support CoordRippr development on Ko-fi">☕ Ko-fi</button>
+    </div>
+  </footer>
 
+  <dialog id="llm-dialog">
+    <form id="llm-form" method="dialog">
+      <h2>✨ LLM Assist</h2>
+      <div class="warn-banner">
+        ⚠️ <strong>Use at your own risk.</strong> This sends the selected PDF text and your CSV rows
+        to the provider you choose, using your own API key. LLMs make mistakes and invent details —
+        <strong>always verify the results yourself</strong> before relying on them.
+      </div>
+
+      <div class="llm-grid">
+        <label>Provider
+          <select id="llm-provider"></select>
+        </label>
+        <label>Model
+          <input id="llm-model" type="text" spellcheck="false" />
+        </label>
+        <label class="wide">API key <span class="muted">(stored unencrypted in this app's local data; sent only to the provider)</span>
+          <input id="llm-key" type="password" spellcheck="false" autocomplete="off" />
+        </label>
+        <label class="wide">Endpoint URL
+          <input id="llm-url" type="text" spellcheck="false" />
+        </label>
+
+        <fieldset class="wide">
+          <legend>PDF text to send</legend>
+          <label><input type="radio" name="llm-scope" value="coords" checked /> Only pages with detected coordinates</label>
+          <label><input type="radio" name="llm-scope" value="all" /> Full PDFs (all pages)</label>
+        </fieldset>
+
+        <fieldset class="wide">
+          <legend>Tasks</legend>
+          <label><input type="checkbox" id="llm-verify" checked /> Verify coordinates against the PDF text</label>
+          <label><input type="checkbox" id="llm-fill" checked /> Fill columns 1 &amp; 2 from the PDF text</label>
+          <label><input type="checkbox" id="llm-overwrite" /> Overwrite non-empty cells in columns 1 &amp; 2</label>
+        </fieldset>
+
+        <label class="wide">Add to the prompt <span class="muted">(what columns 1–2 mean, what to look for, …)</span>
+          <textarea id="llm-extra" rows="3" placeholder="e.g. Column 1 = animal name, Column 2 = the animal's colour as described in the text"></textarea>
+        </label>
+      </div>
+
+      <div id="llm-status" class="muted"></div>
+      <menu>
+        <button value="cancel" id="llm-close" type="submit">Close</button>
+        <button type="button" id="llm-run" class="primary">Run</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script type="module" src="webshim.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -143,8 +143,62 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
   box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.35);
 }
 
-#status {
+#footer {
+  display: flex; align-items: center; gap: 10px;
   padding: 4px 10px; background: var(--panel); border-top: 1px solid var(--border);
+}
+#status {
+  flex: 1; min-width: 0;
   color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 #status.busy { color: var(--accent); }
+#footer-right { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+button.linkish {
+  background: none; border: none; padding: 2px 4px; color: var(--muted);
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+button.linkish:hover { color: var(--accent); }
+#update-chip {
+  background: var(--ok); color: #06281c; border-radius: 10px;
+  padding: 1px 10px; font-weight: 600; cursor: pointer;
+}
+.hidden { display: none !important; }
+
+/* ---------- LLM dialog ---------- */
+dialog {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px 18px; width: min(680px, 92vw);
+  box-shadow: 0 10px 50px rgba(0,0,0,0.6);
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+dialog h2 { margin: 0 0 10px; font-size: 16px; }
+.warn-banner {
+  background: rgba(245, 158, 11, 0.12); border: 1px solid #b45309;
+  color: #fbbf24; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px;
+  line-height: 1.5;
+}
+.llm-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px;
+}
+.llm-grid label { display: flex; flex-direction: column; gap: 3px; }
+.llm-grid label.wide, .llm-grid fieldset.wide { grid-column: 1 / -1; }
+.llm-grid fieldset {
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px 8px;
+  display: flex; gap: 18px; flex-wrap: wrap; margin: 0;
+}
+.llm-grid fieldset legend { color: var(--muted); padding: 0 4px; }
+.llm-grid fieldset label { flex-direction: row; align-items: center; gap: 6px; }
+.llm-grid textarea { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 5px 7px; font: inherit; resize: vertical; }
+#llm-status { margin: 10px 0 4px; min-height: 18px; white-space: pre-wrap; user-select: text; }
+dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 8px 0 0; padding: 0; }
+
+/* ---------- LLM verdict badges ---------- */
+.llm-badge {
+  display: inline-block; min-width: 15px; text-align: center;
+  border-radius: 8px; margin-right: 5px; padding: 0 4px; font-weight: 700;
+  cursor: default;
+}
+.llm-badge.ok { background: rgba(52, 211, 153, 0.18); color: var(--ok); }
+.llm-badge.mismatch { background: rgba(245, 158, 11, 0.2); color: #fbbf24; cursor: pointer; }
+.llm-badge.not_found { background: rgba(148, 163, 184, 0.18); color: var(--muted); }
