@@ -37,6 +37,7 @@ const state = {
   headers: { c1: 'Field 1', c2: 'Field 2' },
   fmt: 'dd', // 'dd' | 'dms' | 'both'
   showAll: false,
+  showHighlights: true,
   zoom: 1.4,
   intensity: DEFAULT_INTENSITY, // regex net width, 1 (strict) … 5 (everything)
   currentFile: null,
@@ -452,7 +453,9 @@ function setActiveRow(rowId, { scrollCsv = false, scrollPdf = false } = {}) {
     const jump = () => {
       const detId = row.src.latDet || row.src.lonDet;
       const el = detId && pagesEl.querySelector(`[data-det="${detId}"]`);
-      if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      // A hidden highlight can't be scrolled to — aim for its page instead.
+      const target = el && (state.showHighlights ? el : el.closest('.page-wrap'));
+      if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' });
     };
     if (state.currentFile !== row.src.fileId) {
       state.currentFile = row.src.fileId;
@@ -798,6 +801,12 @@ for (const radio of document.querySelectorAll('input[name="fmt"]')) {
 $('#chk-all-pages').addEventListener('change', (e) => {
   state.showAll = e.target.checked;
   renderPages();
+  persistSoon();
+});
+
+$('#chk-highlights').addEventListener('change', (e) => {
+  state.showHighlights = e.target.checked;
+  pagesEl.classList.toggle('no-hl', !state.showHighlights);
   persistSoon();
 });
 
@@ -1326,6 +1335,7 @@ function resetState() {
   state.headers = { c1: 'Field 1', c2: 'Field 2' };
   state.fmt = 'dd';
   state.showAll = false;
+  state.showHighlights = true;
   state.zoom = 1.4;
   state.intensity = DEFAULT_INTENSITY;
   state.currentFile = null;
@@ -1342,6 +1352,8 @@ function syncControls() {
     radio.checked = radio.value === state.fmt;
   }
   $('#chk-all-pages').checked = state.showAll;
+  $('#chk-highlights').checked = state.showHighlights;
+  pagesEl.classList.toggle('no-hl', !state.showHighlights);
   $('#zoom-level').textContent = `${Math.round(state.zoom * 100)}%`;
   syncIntensityUi();
 }
@@ -1386,6 +1398,7 @@ async function restoreProject(id) {
     state.headers = data.headers;
     state.fmt = data.fmt;
     state.showAll = data.showAll;
+    state.showHighlights = data.showHighlights;
     state.zoom = data.zoom;
     state.intensity = data.intensity;
     state.currentFile = data.currentFile;
