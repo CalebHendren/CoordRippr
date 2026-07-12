@@ -47,6 +47,7 @@ export function packState(state, nextId) {
       lat: r.lat, lon: r.lon, latRaw: r.latRaw, lonRaw: r.lonRaw,
       src: r.src ? { ...r.src } : null,
       llm: r.llm ? { ...r.llm } : undefined,
+      llmSent: r.llmSent || undefined,
     })),
   };
 }
@@ -87,6 +88,7 @@ export function unpackState(snap) {
       latRaw: r.latRaw ?? null, lonRaw: r.lonRaw ?? null,
       src: r.src || null,
       ...(r.llm ? { llm: r.llm } : {}),
+      ...(r.llmSent ? { llmSent: r.llmSent } : {}),
     };
   });
   return {
