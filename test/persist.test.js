@@ -32,6 +32,7 @@ function sampleState() {
     headers: { c1: 'Animal', c2: 'Color' },
     fmt: 'both',
     showAll: true,
+    showHighlights: false,
     zoom: 1.8,
     intensity: 4,
     currentFile: 'f1',
@@ -61,6 +62,7 @@ test('pack → unpack round trip preserves the session', () => {
   assert.deepEqual(restored.headers, { c1: 'Animal', c2: 'Color' });
   assert.equal(restored.fmt, 'both');
   assert.equal(restored.showAll, true);
+  assert.equal(restored.showHighlights, false);
   assert.equal(restored.zoom, 1.8);
   assert.equal(restored.intensity, 4);
   assert.equal(restored.currentFile, 'f1');
@@ -90,6 +92,7 @@ test('unpackState rejects garbage and fills defaults', () => {
   assert.equal(unpackState('nope'), null);
   const minimal = unpackState({ v: 1, files: [] });
   assert.equal(minimal.fmt, 'dd');
+  assert.equal(minimal.showHighlights, true); // pre-toggle snapshots default on
   assert.equal(minimal.zoom, 1.4);
   assert.equal(minimal.intensity, 3);
   assert.equal(minimal.nextId, 1);

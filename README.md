@@ -37,7 +37,9 @@ If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-
   re-scans the loaded PDFs in place — your edits, filled columns and deletions
   are preserved.
 - **Focused page view** — only pages containing detections are shown
-  (toggle *Show all pages* to see everything). Every hit is highlighted.
+  (toggle *Show all pages* to see everything). Every hit is highlighted;
+  the *Highlights* toggle hides the yellow boxes when they get in the way
+  of reading the page.
 - **Two-way jumping** — click a CSV row to jump to the highlight in the PDF;
   click a highlight in the PDF to jump to its CSV row.
 - **Editable CSV preview** with header row:

@@ -23,6 +23,7 @@ export function packState(state, nextId) {
     headers: { ...state.headers },
     fmt: state.fmt,
     showAll: !!state.showAll,
+    showHighlights: state.showHighlights !== false,
     zoom: state.zoom,
     intensity: state.intensity,
     currentFile: state.currentFile,
@@ -83,6 +84,7 @@ export function unpackState(snap) {
     headers: { c1: 'Field 1', c2: 'Field 2', ...(snap.headers || {}) },
     fmt: snap.fmt || 'dd',
     showAll: !!snap.showAll,
+    showHighlights: snap.showHighlights !== false, // default on (old snapshots too)
     zoom: typeof snap.zoom === 'number' ? snap.zoom : 1.4,
     intensity: typeof snap.intensity === 'number' ? snap.intensity : 3,
     currentFile: snap.currentFile ?? null,

@@ -143,6 +143,7 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
   position: absolute; background: var(--hl); border: 1px solid var(--hl-border);
   border-radius: 2px; cursor: pointer; z-index: 3;
 }
+#pages.no-hl .hl { display: none; }
 .hl:hover { background: rgba(250, 204, 21, 0.62); }
 .hl.active {
   background: var(--hl-active); border-color: var(--hl-active-border);
