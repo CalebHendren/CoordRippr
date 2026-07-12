@@ -2,13 +2,17 @@
 // pages on the right, editable CSV preview on the left, with two-way jumping.
 
 import * as pdfjsLib from '../node_modules/pdfjs-dist/build/pdf.min.mjs';
-import { extractCoordinates, parseSingle, formatDD, formatDMS } from './coords.js';
+import {
+  extractCoordinates, extractCrossPage, parseSingle, formatDD, formatDMS,
+  DEFAULT_INTENSITY, INTENSITY_LABELS,
+} from './coords.js';
 import { buildPageText, rectsForRange } from './pdftext.js';
 import {
   PROVIDERS, buildRequest, extractText, parseResultsJson, normalizeResult,
   buildPrompt, chunkWork,
 } from './llm.js';
 import { RELEASES_API, RELEASES_PAGE, KOFI_URL, isNewer, isDue } from './updates.js';
+import { packState, unpackState, storage } from './persist.js';
 
 const api = window.coordrippr;
 const IS_WEB = api.platform === 'web';
@@ -28,18 +32,25 @@ const PDF_OPEN_OPTS = {
 
 const state = {
   files: [], // {id, name, path, doc, error, numPages, pages:[{num,w,h,proxy,dets:[]}]}
-  dets: new Map(), // detId -> {id, fileId, pageNum, rects, rowId, half, raw}
-  rows: [], // {id, c1, c2, lat, lon, latRaw, lonRaw, src:{fileId,pageNum,latDet,lonDet}}
+  dets: new Map(), // detId -> {id, fileId, pageNum, rects, rowId, half, raw, span}
+  rows: [], // {id, c1, c2, lat, lon, latRaw, lonRaw, src:{fileId,pageNum,latDet,lonDet,extraDets?}}
   headers: { c1: 'Field 1', c2: 'Field 2' },
   fmt: 'dd', // 'dd' | 'dms' | 'both'
   showAll: false,
+  showHighlights: true,
   zoom: 1.4,
+  intensity: DEFAULT_INTENSITY, // regex net width, 1 (strict) … 5 (everything)
   currentFile: null,
+  suppressed: new Set(), // location keys of deleted detections (survive re-scans)
   selected: new Set(),
   anchor: null,
   activeRow: null,
   busy: false,
 };
+
+// Active project ({id, name, …}) and the full projects list.
+let project = null;
+let projects = [];
 
 let nextId = 1;
 const uid = (p) => `${p}${nextId++}`;
@@ -87,18 +98,25 @@ async function loadFiles(specs) {
     try {
       setStatus(`Scanning ${spec.name} (${done}/${specs.length})…`, true);
       const data = spec.data || (await api.readFile(spec.path));
+      // Pathless PDFs (drag & drop, web) can only be restored from stored
+      // bytes — copy before pdf.js transfers the buffer to its worker.
+      if (project && !file.path) {
+        const copy = data.slice(0);
+        storage.savePdf(project.id, file.id, file.name, copy).catch(() => {});
+      }
       file.doc = await pdfjsLib.getDocument({ data, ...PDF_OPEN_OPTS }).promise;
       file.numPages = file.doc.numPages;
+      let prevCtx = null;
       for (let p = 1; p <= file.numPages; p++) {
         const page = await file.doc.getPage(p);
         const vp = page.getViewport({ scale: 1 });
         const pageRec = { num: p, w: vp.width, h: vp.height, proxy: page, dets: [] };
+        file.pages.push(pageRec);
         const tc = await page.getTextContent();
         const { text, spans } = buildPageText(tc);
-        for (const pair of extractCoordinates(text)) {
-          addDetectedRow(file, pageRec, pair, spans);
-        }
-        file.pages.push(pageRec);
+        const ctx = { pageRec, text, spans };
+        scanPage(file, ctx, prevCtx);
+        prevCtx = ctx;
       }
     } catch (err) {
       file.error = err && err.message ? err.message : String(err);
@@ -109,33 +127,176 @@ async function loadFiles(specs) {
     const first = state.files.find((f) => f.pages.some((p) => p.dets.length)) || state.files[0];
     state.currentFile = first ? first.id : null;
   }
-  renderFileList();
-  renderPages();
-  renderTable();
-  refreshCounts();
+  renderAll();
+  persistSoon();
 }
 
-function addDetectedRow(file, pageRec, pair, spans) {
-  const row = {
-    id: uid('r'), c1: '', c2: '',
-    lat: pair.lat ? pair.lat.dd : null,
-    lon: pair.lon ? pair.lon.dd : null,
-    latRaw: null, lonRaw: null,
-    src: { fileId: file.id, pageNum: pageRec.num, latDet: null, lonDet: null },
-  };
-  for (const half of ['lat', 'lon']) {
+// One page's detections: per-page pairs, then pairs straddling the boundary
+// with the previous page. `reuse` (rescan only) maps location keys to old
+// rows so user edits survive an intensity change.
+function scanPage(file, ctx, prevCtx, reuse = null) {
+  for (const pair of extractCoordinates(ctx.text, state.intensity)) {
+    addDetectedRow(file, ctx, pair, reuse);
+  }
+  if (prevCtx) {
+    for (const pair of extractCrossPage(prevCtx.text, ctx.text, state.intensity)) {
+      addCrossPageRow(file, prevCtx, ctx, pair, reuse);
+    }
+  }
+}
+
+// Location key of one detected token: survives re-scans (same file, page and
+// character offset), used for edit-preserving rescans and delete suppression.
+const locKey = (fileId, pageNum, half, start) => `${fileId}:${pageNum}:${half}:${start}`;
+
+function addDetectedRow(file, ctx, pair, reuse = null) {
+  const pageRec = ctx.pageRec;
+  const halves = ['lat', 'lon'].filter((h) => pair[h]);
+  const keys = halves.map((h) => locKey(file.id, pageRec.num, h, pair[h].start));
+  if (keys.some((k) => state.suppressed.has(k))) return; // user deleted this one before
+
+  // Rescan: reattach the old row (with its edits) when the detection still
+  // matches; otherwise make a fresh row.
+  let row = null;
+  if (reuse) {
+    for (const k of keys) {
+      if (reuse.has(k)) { row = reuse.get(k); break; }
+    }
+  }
+  if (row) {
+    for (const k of keys) reuse.delete(k);
+    row.src = { fileId: file.id, pageNum: pageRec.num, latDet: null, lonDet: null };
+  } else {
+    row = {
+      id: uid('r'), c1: '', c2: '',
+      lat: pair.lat ? pair.lat.dd : null,
+      lon: pair.lon ? pair.lon.dd : null,
+      latRaw: null, lonRaw: null,
+      src: { fileId: file.id, pageNum: pageRec.num, latDet: null, lonDet: null },
+    };
+  }
+  for (const half of halves) {
     const tok = pair[half];
-    if (!tok) continue;
     const det = {
       id: uid('d'), fileId: file.id, pageNum: pageRec.num,
-      rects: rectsForRange(spans, tok.start, tok.end),
+      rects: rectsForRange(ctx.spans, tok.start, tok.end),
       rowId: row.id, half, raw: tok.raw,
+      span: [tok.start, tok.end],
     };
     state.dets.set(det.id, det);
     pageRec.dets.push(det.id);
     row.src[half + 'Det'] = det.id;
   }
   state.rows.push(row);
+}
+
+function findDetAt(fileId, pageNum, start, end) {
+  for (const det of state.dets.values()) {
+    if (det.fileId === fileId && det.pageNum === pageNum &&
+        det.span && det.span[0] === start && det.span[1] === end) return det;
+  }
+  return null;
+}
+
+// A pair whose halves live on two different pages (lat at the bottom of one,
+// lon at the top of the next — or a token broken by the page break itself).
+function addCrossPageRow(file, prevCtx, curCtx, pair, reuse = null) {
+  const ctxFor = (seg) => (seg.page === 'prev' ? prevCtx : curCtx);
+
+  // The per-page scan may already know these tokens (kept as lone strong
+  // half-pairs). A token already sitting in a *full* pair means this
+  // cross-page candidate is redundant.
+  const existing = [];
+  for (const tok of [pair.lat, pair.lon]) {
+    const seg = tok.segs[0];
+    const det = findDetAt(file.id, ctxFor(seg).pageRec.num, seg.start, seg.end);
+    if (det) existing.push(det);
+  }
+  for (const det of existing) {
+    const row = state.rows.find((r) => r.id === det.rowId);
+    if (row && row.src && row.src.latDet && row.src.lonDet) return;
+  }
+
+  // Suppression check (page + offset of each half's first segment).
+  for (const tok of [pair.lat, pair.lon]) {
+    const seg = tok.segs[0];
+    const half = tok === pair.lat ? 'lat' : 'lon';
+    if (state.suppressed.has(locKey(file.id, ctxFor(seg).pageRec.num, half, seg.start))) return;
+  }
+
+  // Absorb the lone half-rows into the merged pair.
+  if (existing.length) removeRows(new Set(existing.map((d) => d.rowId)), { suppress: false });
+
+  const latPage = ctxFor(pair.lat.segs[0]).pageRec.num;
+  // Rescan: reattach the old merged row (with its edits) when it still matches.
+  let row = null;
+  if (reuse) {
+    for (const tok of [pair.lat, pair.lon]) {
+      const seg = tok.segs[0];
+      const half = tok === pair.lat ? 'lat' : 'lon';
+      const k = locKey(file.id, ctxFor(seg).pageRec.num, half, seg.start);
+      if (reuse.has(k)) { row = reuse.get(k); reuse.delete(k); break; }
+    }
+  }
+  if (row) {
+    row.src = { fileId: file.id, pageNum: latPage, latDet: null, lonDet: null, extraDets: [] };
+  } else {
+    row = {
+      id: uid('r'), c1: '', c2: '',
+      lat: pair.lat.dd, lon: pair.lon.dd,
+      latRaw: null, lonRaw: null,
+      src: { fileId: file.id, pageNum: latPage, latDet: null, lonDet: null, extraDets: [] },
+    };
+  }
+  for (const half of ['lat', 'lon']) {
+    const tok = pair[half];
+    tok.segs.forEach((seg, i) => {
+      const ctx = ctxFor(seg);
+      const det = {
+        id: uid('d'), fileId: file.id, pageNum: ctx.pageRec.num,
+        rects: rectsForRange(ctx.spans, seg.start, seg.end),
+        rowId: row.id, half, raw: tok.raw,
+        span: [seg.start, seg.end],
+      };
+      state.dets.set(det.id, det);
+      ctx.pageRec.dets.push(det.id);
+      if (i === 0) row.src[half + 'Det'] = det.id;
+      else row.src.extraDets.push(det.id);
+    });
+  }
+  state.rows.push(row);
+}
+
+// Remove rows (and their detections) from state. No rendering here — callers
+// re-render. With suppress (default), the detection locations are remembered
+// so re-scans don't resurrect deleted rows.
+function removeRows(ids, { suppress = true } = {}) {
+  for (const row of state.rows) {
+    if (!ids.has(row.id) || !row.src) continue;
+    for (const detId of [row.src.latDet, row.src.lonDet, ...(row.src.extraDets || [])]) {
+      if (!detId) continue;
+      const det = state.dets.get(detId);
+      if (det) {
+        const file = state.files.find((f) => f.id === det.fileId);
+        const pageRec = file?.pages.find((p) => p.num === det.pageNum);
+        if (pageRec) pageRec.dets = pageRec.dets.filter((d) => d !== detId);
+        if (suppress && det.span) {
+          state.suppressed.add(locKey(det.fileId, det.pageNum, det.half, det.span[0]));
+        }
+      }
+      state.dets.delete(detId);
+    }
+  }
+  state.rows = state.rows.filter((r) => !ids.has(r.id));
+  for (const id of ids) state.selected.delete(id);
+  if (!state.rows.some((r) => r.id === state.activeRow)) state.activeRow = null;
+}
+
+function renderAll() {
+  renderFileList();
+  renderPages();
+  renderTable();
+  refreshCounts();
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +453,9 @@ function setActiveRow(rowId, { scrollCsv = false, scrollPdf = false } = {}) {
     const jump = () => {
       const detId = row.src.latDet || row.src.lonDet;
       const el = detId && pagesEl.querySelector(`[data-det="${detId}"]`);
-      if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      // A hidden highlight can't be scrolled to — aim for its page instead.
+      const target = el && (state.showHighlights ? el : el.closest('.page-wrap'));
+      if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' });
     };
     if (state.currentFile !== row.src.fileId) {
       state.currentFile = row.src.fileId;
@@ -311,6 +474,7 @@ function markActiveHighlights() {
   if (row && row.src) {
     if (row.src.latDet) active.add(row.src.latDet);
     if (row.src.lonDet) active.add(row.src.lonDet);
+    for (const d of row.src.extraDets || []) active.add(d);
   }
   for (const el of pagesEl.querySelectorAll('.hl')) {
     el.classList.toggle('active', active.has(el.dataset.det));
@@ -380,6 +544,10 @@ function renderTable() {
     tbodyEl.appendChild(buildRowEl(row, cols));
   }
   $('#csv-empty').style.display = state.rows.length ? 'none' : '';
+  const flagged = state.rows.filter((r) => r.llm && r.llm.del).length;
+  const delFlaggedBtn = $('#btn-del-flagged');
+  delFlaggedBtn.classList.toggle('hidden', flagged === 0);
+  delFlaggedBtn.textContent = `🗑 Delete Flagged (${flagged})`;
   refreshRowClasses();
 }
 
@@ -419,9 +587,20 @@ function buildRowEl(row, cols) {
 
   const tdSrc = document.createElement('td');
   tdSrc.className = 'srcinfo';
-  if (row.llm) {
+  if (row.llm && row.llm.del) {
     const badge = document.createElement('span');
-    const verdict = row.llm.verdict || 'not_found';
+    badge.className = 'llm-badge del';
+    badge.textContent = '🗑';
+    badge.dataset.row = row.id;
+    badge.title =
+      `LLM flagged this row as a false positive (not a real coordinate).` +
+      `${row.llm.note ? `\n${row.llm.note}` : ''}` +
+      `\nClick to delete the row.\n(LLM output — verify yourself)`;
+    tdSrc.appendChild(badge);
+  }
+  if (row.llm && row.llm.verdict) {
+    const badge = document.createElement('span');
+    const verdict = row.llm.verdict;
     badge.className = `llm-badge ${verdict}`;
     badge.textContent = verdict === 'ok' ? '✓' : verdict === 'mismatch' ? '⚠' : '?';
     badge.dataset.row = row.id;
@@ -463,7 +642,10 @@ function refreshRowCoordCells(tr, row) {
 
 theadEl.addEventListener('change', (e) => {
   const h = e.target.dataset.h;
-  if (h) state.headers[h] = e.target.value;
+  if (h) {
+    state.headers[h] = e.target.value;
+    persistSoon();
+  }
 });
 
 tbodyEl.addEventListener('change', (e) => {
@@ -475,6 +657,7 @@ tbodyEl.addEventListener('change', (e) => {
 
   if (field === 'c1' || field === 'c2') {
     row[field] = input.value;
+    persistSoon();
     return;
   }
   // Coordinate cell: auto-clean whatever was typed.
@@ -497,10 +680,28 @@ tbodyEl.addEventListener('change', (e) => {
   const col = coordColumns()[Number(input.dataset.col)];
   if (row[rawKey] == null) input.value = cellText(row, col);
   refreshRowCoordCells(tr, row);
+  persistSoon();
 });
 
 // Click a row -> make it active and jump to its PDF spot.
 tbodyEl.addEventListener('click', (e) => {
+  // Deletion flag badge: offer to delete the flagged row.
+  if (e.target.classList.contains('llm-badge') && e.target.classList.contains('del')) {
+    const row = state.rows.find((r) => r.id === e.target.dataset.row);
+    if (row) {
+      const ok = confirm(
+        `The LLM flagged this row as a false positive.\n\n` +
+        `${row.llm.note || ''}\n\nDelete the row?\nLLM output can be wrong — verify against the PDF first.`
+      );
+      if (ok) {
+        removeRows(new Set([row.id]));
+        renderAll();
+        persistSoon();
+      }
+    }
+    return;
+  }
+
   // Mismatch badge: offer to apply the LLM's suggested coordinates.
   if (e.target.classList.contains('llm-badge')) {
     const row = state.rows.find((r) => r.id === e.target.dataset.row);
@@ -516,6 +717,7 @@ tbodyEl.addEventListener('click', (e) => {
         if (row.llm.lon != null) { row.lon = row.llm.lon; row.lonRaw = null; }
         row.llm = { ...row.llm, verdict: 'ok', note: 'LLM suggestion applied — verify manually.' };
         renderTable();
+        persistSoon();
       }
       return;
     }
@@ -592,12 +794,20 @@ for (const radio of document.querySelectorAll('input[name="fmt"]')) {
   radio.addEventListener('change', () => {
     state.fmt = radio.value;
     renderTable();
+    persistSoon();
   });
 }
 
 $('#chk-all-pages').addEventListener('change', (e) => {
   state.showAll = e.target.checked;
   renderPages();
+  persistSoon();
+});
+
+$('#chk-highlights').addEventListener('change', (e) => {
+  state.showHighlights = e.target.checked;
+  pagesEl.classList.toggle('no-hl', !state.showHighlights);
+  persistSoon();
 });
 
 $('#btn-zoom-in').addEventListener('click', () => setZoom(state.zoom + 0.2));
@@ -607,6 +817,97 @@ function setZoom(z) {
   state.zoom = Math.min(3, Math.max(0.6, Math.round(z * 10) / 10));
   $('#zoom-level').textContent = `${Math.round(state.zoom * 100)}%`;
   renderPages();
+  persistSoon();
+}
+
+// ---------------------------------------------------------------------------
+// Regex intensity slider
+// ---------------------------------------------------------------------------
+
+const intensityEl = $('#intensity');
+
+function intensityName(level) {
+  return (INTENSITY_LABELS[level] || '').split(' — ')[0];
+}
+
+function syncIntensityUi() {
+  intensityEl.value = String(state.intensity);
+  $('#intensity-name').textContent = intensityName(state.intensity);
+  intensityEl.title = INTENSITY_LABELS[state.intensity] || '';
+}
+
+intensityEl.addEventListener('input', () => {
+  $('#intensity-name').textContent = intensityName(Number(intensityEl.value));
+  intensityEl.title = INTENSITY_LABELS[Number(intensityEl.value)] || '';
+});
+
+intensityEl.addEventListener('change', async () => {
+  const level = Number(intensityEl.value);
+  if (level === state.intensity) return;
+  if (state.busy) {
+    syncIntensityUi();
+    setStatus('Busy — try again when scanning finishes.');
+    return;
+  }
+  state.intensity = level;
+  syncIntensityUi();
+  await rescanAll();
+});
+
+// Re-run detection over every loaded PDF with the current intensity. Rows
+// whose detection still matches keep their edits; manual rows are untouched;
+// rows the user deleted stay deleted (suppression keys).
+async function rescanAll() {
+  const scannable = state.files.filter((f) => !f.error && f.doc);
+  if (scannable.length === 0) { renderTable(); persistSoon(); return; }
+  state.busy = true;
+  setStatus(`Re-scanning with the "${intensityName(state.intensity)}" net…`, true);
+
+  // Location keys of the current detection rows -> row, for edit reuse.
+  const reuse = new Map();
+  const detRows = new Set();
+  for (const row of state.rows) {
+    if (!row.src) continue;
+    if (!scannable.some((f) => f.id === row.src.fileId)) continue; // keep as-is
+    detRows.add(row.id);
+    for (const detId of [row.src.latDet, row.src.lonDet]) {
+      const det = detId && state.dets.get(detId);
+      if (det && det.span) reuse.set(locKey(det.fileId, det.pageNum, det.half, det.span[0]), row);
+    }
+  }
+
+  // Strip the old detections of scannable files; keep manual rows and rows of
+  // broken files in place (their relative order is preserved by re-adding
+  // scan results first).
+  const keptRows = state.rows.filter((r) => !detRows.has(r.id));
+  state.rows = [];
+  for (const file of scannable) {
+    for (const pageRec of file.pages) {
+      for (const detId of pageRec.dets) state.dets.delete(detId);
+      pageRec.dets = [];
+    }
+  }
+
+  try {
+    for (const file of scannable) {
+      let prevCtx = null;
+      for (const pageRec of file.pages) {
+        const tc = await pageRec.proxy.getTextContent();
+        const { text, spans } = buildPageText(tc);
+        const ctx = { pageRec, text, spans };
+        scanPage(file, ctx, prevCtx, reuse);
+        prevCtx = ctx;
+      }
+    }
+  } finally {
+    state.rows.push(...keptRows);
+    state.selected.clear();
+    state.anchor = null;
+    if (!state.rows.some((r) => r.id === state.activeRow)) state.activeRow = null;
+    state.busy = false;
+  }
+  renderAll();
+  persistSoon();
 }
 
 $('#btn-add-row').addEventListener('click', () => {
@@ -616,32 +917,30 @@ $('#btn-add-row').addEventListener('click', () => {
   });
   renderTable();
   refreshCounts();
+  persistSoon();
   tbodyEl.lastElementChild?.scrollIntoView({ block: 'nearest' });
 });
 
 $('#btn-del-rows').addEventListener('click', () => {
   if (state.selected.size === 0) { setStatus('Select rows first (click the row numbers).'); return; }
-  for (const row of state.rows) {
-    if (!state.selected.has(row.id) || !row.src) continue;
-    for (const detId of [row.src.latDet, row.src.lonDet]) {
-      if (!detId) continue;
-      const det = state.dets.get(detId);
-      if (det) {
-        const file = state.files.find((f) => f.id === det.fileId);
-        const pageRec = file?.pages.find((p) => p.num === det.pageNum);
-        if (pageRec) pageRec.dets = pageRec.dets.filter((d) => d !== detId);
-      }
-      state.dets.delete(detId);
-    }
-  }
-  state.rows = state.rows.filter((r) => !state.selected.has(r.id));
-  state.selected.clear();
+  removeRows(new Set(state.selected));
   state.anchor = null;
-  if (!state.rows.some((r) => r.id === state.activeRow)) state.activeRow = null;
-  renderTable();
-  renderFileList();
-  renderPages();
-  refreshCounts();
+  renderAll();
+  persistSoon();
+});
+
+$('#btn-del-flagged').addEventListener('click', () => {
+  const flagged = state.rows.filter((r) => r.llm && r.llm.del);
+  if (flagged.length === 0) return;
+  const ok = confirm(
+    `Delete the ${flagged.length} row${flagged.length === 1 ? '' : 's'} the LLM flagged as false positives?\n\n` +
+    `LLM output can be wrong — spot-check the flags before deleting.`
+  );
+  if (!ok) return;
+  removeRows(new Set(flagged.map((r) => r.id)));
+  renderAll();
+  persistSoon();
+  setStatus(`Deleted ${flagged.length} LLM-flagged row${flagged.length === 1 ? '' : 's'}.`);
 });
 
 function applyFill(rowIds, colField, value) {
@@ -650,6 +949,7 @@ function applyFill(rowIds, colField, value) {
     if (rowIds.has(row.id)) { row[colField] = value; n++; }
   }
   renderTable();
+  persistSoon();
   setStatus(`Filled ${n} row${n === 1 ? '' : 's'}.`);
 }
 
@@ -724,7 +1024,8 @@ document.addEventListener('drop', async (e) => {
   window.addEventListener('mouseup', () => { dragging = false; document.body.style.cursor = ''; });
 }
 
-api.onAutoload((paths) => {
+api.onAutoload(async (paths) => {
+  await appReady; // don't race the session restore
   loadFiles(paths.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() })));
 });
 
@@ -771,8 +1072,20 @@ function initLlmDialog() {
   if (prefs.verify != null) $('#llm-verify').checked = prefs.verify;
   if (prefs.fill != null) $('#llm-fill').checked = prefs.fill;
   if (prefs.overwrite != null) $('#llm-overwrite').checked = prefs.overwrite;
+  if (prefs.flagDelete != null) $('#llm-flagdel').checked = prefs.flagDelete;
+  // Auto-delete is deliberately NOT restored from prefs: it's dangerous, so
+  // it must be opted into per run.
+  syncAutoDelState();
+  $('#llm-flagdel').addEventListener('change', syncAutoDelState);
   syncLlmProviderFields();
   sel.addEventListener('change', syncLlmProviderFields);
+}
+
+function syncAutoDelState() {
+  const flag = $('#llm-flagdel').checked;
+  const auto = $('#llm-autodel');
+  if (!flag) auto.checked = false;
+  auto.disabled = !flag;
 }
 
 function collectLlmSettings() {
@@ -788,6 +1101,8 @@ function collectLlmSettings() {
     verify: $('#llm-verify').checked,
     fill: $('#llm-fill').checked,
     overwrite: $('#llm-overwrite').checked,
+    flagDelete: $('#llm-flagdel').checked,
+    autoDelete: $('#llm-flagdel').checked && $('#llm-autodel').checked,
   };
   const prefs = llmPrefs();
   prefs.provider = id;
@@ -799,6 +1114,7 @@ function collectLlmSettings() {
   prefs.verify = s.verify;
   prefs.fill = s.fill;
   prefs.overwrite = s.overwrite;
+  prefs.flagDelete = s.flagDelete;
   localStorage.setItem(LLM_PREFS_KEY, JSON.stringify(prefs));
   return s;
 }
@@ -836,18 +1152,29 @@ async function pageTextFor(file, pageNum) {
 }
 
 function applyLlmResults(results, s, counts) {
+  const toDelete = new Set();
   for (const res of results) {
     const row = state.rows.find((r) => r.id === res.row);
     if (!row) continue;
     if (s.verify && res.verdict) {
-      row.llm = { verdict: res.verdict, note: res.note, lat: res.lat, lon: res.lon };
+      row.llm = { ...(row.llm || {}), verdict: res.verdict, note: res.note, lat: res.lat, lon: res.lon };
       counts[res.verdict]++;
     }
     if (s.fill) {
       if (res.col1 && (s.overwrite || !String(row.c1 || '').trim())) { row.c1 = res.col1; counts.filled++; }
       if (res.col2 && (s.overwrite || !String(row.c2 || '').trim())) { row.c2 = res.col2; counts.filled++; }
     }
+    if (s.flagDelete && res.del) {
+      if (s.autoDelete) {
+        toDelete.add(row.id);
+        counts.deleted++;
+      } else {
+        row.llm = { ...(row.llm || {}), del: true, note: res.note || (row.llm && row.llm.note) || '' };
+        counts.flagged++;
+      }
+    }
   }
+  if (toDelete.size) removeRows(toDelete);
 }
 
 $('#btn-llm').addEventListener('click', () => {
@@ -865,14 +1192,22 @@ $('#llm-run').addEventListener('click', async () => {
   if (!s.url) return llmStatus('Enter an endpoint URL.');
   if (!s.model) return llmStatus('Enter a model name.');
   if (!s.key && s.provider !== 'custom') return llmStatus('Enter your API key.');
-  if (!s.verify && !s.fill) return llmStatus('Pick at least one task.');
+  if (!s.verify && !s.fill && !s.flagDelete) return llmStatus('Pick at least one task.');
+  if (s.autoDelete) {
+    const sure = confirm(
+      'Automatic deletion is enabled: rows the LLM flags as false positives will be ' +
+      'deleted WITHOUT asking you, based on nothing but the model\'s judgement.\n\n' +
+      'LLMs make mistakes — real coordinates can be lost. Continue?'
+    );
+    if (!sure) return llmStatus('Cancelled — automatic deletion not confirmed.');
+  }
   const work = buildLlmWork(s.scope);
   if (work.length === 0) return llmStatus('No rows with a PDF source to process — scan some PDFs first. (Manually added rows are skipped.)');
 
   llmRunning = true;
   llmAbort = false;
   $('#llm-run').textContent = 'Stop';
-  const counts = { ok: 0, mismatch: 0, not_found: 0, filled: 0, errors: [] };
+  const counts = { ok: 0, mismatch: 0, not_found: 0, filled: 0, flagged: 0, deleted: 0, errors: [] };
 
   try {
     llmStatus('Extracting page text…');
@@ -891,7 +1226,7 @@ $('#llm-run').addEventListener('click', async () => {
       llmStatus(`Request ${n + 1}/${chunks.length} — ${chunk.rows.length} row${chunk.rows.length === 1 ? '' : 's'} from ${chunk.pages[0].file}…`);
       const { system, user } = buildPrompt({
         rows: chunk.rows, pages: chunk.pages, headers: state.headers,
-        extra: s.extra, verify: s.verify, fill: s.fill,
+        extra: s.extra, verify: s.verify, fill: s.fill, flagDelete: s.flagDelete,
       });
       const req = buildRequest({
         kind: s.kind, url: s.url, model: s.model, apiKey: s.key,
@@ -913,8 +1248,10 @@ $('#llm-run').addEventListener('click', async () => {
         counts.errors.push(`Request ${n + 1}: the model returned no parseable JSON results.`);
         continue;
       }
+      const deletedBefore = counts.deleted;
       applyLlmResults(results, s, counts);
-      renderTable();
+      if (counts.deleted > deletedBefore) renderAll();
+      else renderTable();
     }
   } catch (err) {
     counts.errors.push(err && err.message ? err.message : String(err));
@@ -925,12 +1262,276 @@ $('#llm-run').addEventListener('click', async () => {
   const parts = [];
   if (s.verify) parts.push(`verified ${counts.ok} ✓ · ${counts.mismatch} ⚠ mismatch · ${counts.not_found} ? not found`);
   if (s.fill) parts.push(`${counts.filled} cell${counts.filled === 1 ? '' : 's'} filled`);
+  if (s.flagDelete) {
+    parts.push(s.autoDelete
+      ? `${counts.deleted} row${counts.deleted === 1 ? '' : 's'} auto-deleted`
+      : `${counts.flagged} row${counts.flagged === 1 ? '' : 's'} flagged 🗑 (click a flag or "Delete Flagged" to remove)`);
+  }
   let msg = `${llmAbort ? 'Stopped early — ' : 'Done — '}${parts.join('; ')}.`;
   if (counts.errors.length) msg += `\nProblems:\n• ${counts.errors.slice(0, 5).join('\n• ')}`;
   msg += '\n⚠️ LLM output is not ground truth — verify it against the PDFs yourself.';
   llmStatus(msg);
   refreshCounts();
+  persistSoon();
 });
+
+// ---------------------------------------------------------------------------
+// Projects & persistence: every project keeps its own files/rows/settings in
+// IndexedDB and the whole session is restored on the next launch.
+// ---------------------------------------------------------------------------
+
+let persistTimer = null;
+
+function persistSoon() {
+  if (!project) return;
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(persistNow, 600);
+}
+
+async function persistNow() {
+  clearTimeout(persistTimer);
+  persistTimer = null;
+  if (!project) return;
+  try {
+    await storage.saveSnapshot(project.id, packState(state, nextId));
+    project.updatedAt = Date.now();
+    await storage.saveProjects(projects);
+  } catch (err) {
+    console.warn('CoordRippr: session save failed', err);
+  }
+}
+
+// Best-effort flush when the window goes away mid-debounce.
+window.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && persistTimer) persistNow();
+});
+window.addEventListener('beforeunload', () => {
+  if (persistTimer) persistNow();
+});
+
+function makeProject(name) {
+  const id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  return { id, name, createdAt: Date.now(), updatedAt: Date.now() };
+}
+
+function renderProjectSelect() {
+  const sel = $('#project-select');
+  sel.innerHTML = projects
+    .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`)
+    .join('');
+  if (project) sel.value = project.id;
+}
+
+async function destroyDocs() {
+  for (const f of state.files) {
+    try { await f.doc?.destroy?.(); } catch { /* already gone */ }
+  }
+}
+
+function resetState() {
+  state.files = [];
+  state.dets = new Map();
+  state.rows = [];
+  state.headers = { c1: 'Field 1', c2: 'Field 2' };
+  state.fmt = 'dd';
+  state.showAll = false;
+  state.showHighlights = true;
+  state.zoom = 1.4;
+  state.intensity = DEFAULT_INTENSITY;
+  state.currentFile = null;
+  state.suppressed = new Set();
+  state.selected = new Set();
+  state.anchor = null;
+  state.activeRow = null;
+  state.busy = false;
+}
+
+// Push state values back into the toolbar controls.
+function syncControls() {
+  for (const radio of document.querySelectorAll('input[name="fmt"]')) {
+    radio.checked = radio.value === state.fmt;
+  }
+  $('#chk-all-pages').checked = state.showAll;
+  $('#chk-highlights').checked = state.showHighlights;
+  pagesEl.classList.toggle('no-hl', !state.showHighlights);
+  $('#zoom-level').textContent = `${Math.round(state.zoom * 100)}%`;
+  syncIntensityUi();
+}
+
+// Reattach a pdf.js document to a restored file: prefer re-reading from its
+// path (Electron), fall back to the bytes stored at load time (web, drag &
+// drop). Rows and highlights survive either way; only page rendering needs
+// the document.
+async function reattachFile(file) {
+  if (file.error) return;
+  try {
+    let data = null;
+    if (file.path) {
+      try { data = await api.readFile(file.path); } catch { /* moved/deleted */ }
+    }
+    if (!data) {
+      const stored = await storage.loadPdf(project.id, file.id);
+      if (stored && stored.bytes) data = stored.bytes;
+    }
+    if (!data) throw new Error('source PDF unavailable — open it again to see pages');
+    file.doc = await pdfjsLib.getDocument({ data, ...PDF_OPEN_OPTS }).promise;
+    file.numPages = file.doc.numPages;
+    for (const pageRec of file.pages) {
+      pageRec.proxy = await file.doc.getPage(pageRec.num);
+    }
+  } catch (err) {
+    file.error = err && err.message ? err.message : String(err);
+  }
+}
+
+async function restoreProject(id) {
+  let data = null;
+  try {
+    data = unpackState(await storage.loadSnapshot(id));
+  } catch { /* fresh project */ }
+  await destroyDocs();
+  resetState();
+  if (data) {
+    state.files = data.files;
+    state.dets = data.dets;
+    state.rows = data.rows;
+    state.headers = data.headers;
+    state.fmt = data.fmt;
+    state.showAll = data.showAll;
+    state.showHighlights = data.showHighlights;
+    state.zoom = data.zoom;
+    state.intensity = data.intensity;
+    state.currentFile = data.currentFile;
+    state.suppressed = data.suppressed;
+    nextId = Math.max(nextId, data.nextId);
+    if (state.files.length) {
+      state.busy = true;
+      setStatus('Restoring PDFs…', true);
+      for (const file of state.files) await reattachFile(file);
+      state.busy = false;
+    }
+  }
+  syncControls();
+  renderAll();
+}
+
+async function switchProject(id) {
+  if (!project || id === project.id) return;
+  if (state.busy) {
+    $('#project-select').value = project.id;
+    setStatus('Busy — wait for scanning to finish before switching projects.');
+    return;
+  }
+  await persistNow();
+  const target = projects.find((p) => p.id === id);
+  if (!target) { renderProjectSelect(); return; }
+  project = target;
+  renderProjectSelect();
+  try { await storage.setActiveProject(project.id); } catch { /* non-fatal */ }
+  await restoreProject(project.id);
+  setStatus(`Switched to “${project.name}” — ${state.rows.length} row${state.rows.length === 1 ? '' : 's'}.`);
+}
+
+// Small name-input dialog (Electron has no window.prompt).
+function askName(title, initial = '') {
+  return new Promise((resolve) => {
+    const dlg = $('#name-dialog');
+    $('#name-dialog-title').textContent = title;
+    const input = $('#name-input');
+    input.value = initial;
+    const onClose = () => {
+      dlg.removeEventListener('close', onClose);
+      resolve(dlg.returnValue === 'ok' ? input.value.trim() : null);
+    };
+    dlg.addEventListener('close', onClose);
+    dlg.showModal();
+    input.select();
+  });
+}
+
+$('#project-select').addEventListener('change', (e) => switchProject(e.target.value));
+
+$('#btn-proj-new').addEventListener('click', async () => {
+  if (!project) return setStatus('Persistence is unavailable — projects are disabled.');
+  if (state.busy) return setStatus('Busy — wait for scanning to finish.');
+  const name = await askName('New project', `Project ${projects.length + 1}`);
+  if (!name) return;
+  await persistNow();
+  const p = makeProject(name);
+  projects.push(p);
+  project = p;
+  try {
+    await storage.saveProjects(projects);
+    await storage.setActiveProject(p.id);
+  } catch { /* non-fatal */ }
+  renderProjectSelect();
+  await destroyDocs();
+  resetState();
+  syncControls();
+  renderAll();
+  setStatus(`Created project “${name}”. Open a folder of PDFs to begin.`);
+});
+
+$('#btn-proj-rename').addEventListener('click', async () => {
+  if (!project) return;
+  const name = await askName('Rename project', project.name);
+  if (!name || name === project.name) return;
+  project.name = name;
+  project.updatedAt = Date.now();
+  try { await storage.saveProjects(projects); } catch { /* non-fatal */ }
+  renderProjectSelect();
+  setStatus(`Renamed project to “${name}”.`);
+});
+
+$('#btn-proj-del').addEventListener('click', async () => {
+  if (!project) return;
+  if (state.busy) return setStatus('Busy — wait for scanning to finish.');
+  const ok = confirm(
+    `Delete project “${project.name}” and its saved session?\n\n` +
+    `Your PDFs on disk are not touched, but the extracted rows and edits in ` +
+    `this project are gone for good.`
+  );
+  if (!ok) return;
+  const deadId = project.id;
+  projects = projects.filter((p) => p.id !== deadId);
+  try { await storage.deleteProject(deadId); } catch { /* non-fatal */ }
+  if (projects.length === 0) projects = [makeProject('Project 1')];
+  project = projects[0];
+  try {
+    await storage.saveProjects(projects);
+    await storage.setActiveProject(project.id);
+  } catch { /* non-fatal */ }
+  renderProjectSelect();
+  await restoreProject(project.id);
+  setStatus(`Deleted project. Now in “${project.name}”.`);
+});
+
+async function initProjects() {
+  try {
+    projects = await storage.listProjects();
+    if (projects.length === 0) {
+      project = makeProject('Project 1');
+      projects = [project];
+      await storage.saveProjects(projects);
+      await storage.setActiveProject(project.id);
+    } else {
+      const activeId = await storage.getActiveProject();
+      project = projects.find((p) => p.id === activeId) || projects[0];
+    }
+    renderProjectSelect();
+    await restoreProject(project.id);
+    setStatus(state.rows.length
+      ? `Resumed “${project.name}” — ${state.files.length} PDF${state.files.length === 1 ? '' : 's'} · ${state.rows.length} row${state.rows.length === 1 ? '' : 's'}.`
+      : 'Ready. Open a folder of PDFs to begin.');
+  } catch (err) {
+    // IndexedDB unavailable (private mode, storage denied…): still usable,
+    // just without projects/resume.
+    console.warn('CoordRippr: persistence unavailable', err);
+    project = null;
+    projects = [];
+    setStatus('Ready (persistence unavailable — this session will not be saved).');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Ko-fi, version display & release checking
@@ -1000,5 +1601,6 @@ async function initVersionAndUpdates() {
 initLlmDialog();
 initVersionAndUpdates();
 renderTable();
-setZoom(state.zoom);
-setStatus('Ready. Open a folder of PDFs to begin.');
+syncControls();
+setStatus('Loading…');
+const appReady = initProjects();

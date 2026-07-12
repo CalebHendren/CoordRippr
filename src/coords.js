@@ -51,6 +51,36 @@ const HEMI_MAP = {
   lat: null, latitude: null, lon: null, long: null, longitude: null,
 };
 
+// ---------------------------------------------------------------------------
+// Intensity: how wide the detection net is cast (1 = strict … 5 = everything).
+// Level 3 is the historical default behaviour.
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_INTENSITY = 3;
+
+export const INTENSITY_LABELS = {
+  1: 'Strict — both halves must carry strong evidence (°, hemisphere, …)',
+  2: 'Careful — at least one half must be unambiguous',
+  3: 'Balanced — the classic CoordRippr net (default)',
+  4: 'Wide — single-decimal numbers can pair, bigger gaps allowed',
+  5: 'Everything — even bare integer pairs; expect false positives',
+};
+
+function intensityRules(level) {
+  const l = Math.min(5, Math.max(1, Math.round(Number(level) || DEFAULT_INTENSITY)));
+  return {
+    level: l,
+    // decimal digits needed for a bare number to count as a weak candidate
+    weakDecimals: l >= 4 ? 1 : 2,
+    // integers with no coordinate evidence at all become 'bare' candidates
+    allowBare: l >= 5,
+    // max chars between the two halves of a pair
+    maxGap: l <= 2 ? 30 : l === 3 ? 40 : l === 4 ? 60 : 80,
+    pairNeeds: l === 1 ? 'both-strong' : l === 2 ? 'one-strong' : 'default',
+    keepLone: l === 1 ? 'none' : l <= 4 ? 'strong' : 'strong+medium',
+  };
+}
+
 function num(str) {
   if (str == null) return null;
   return parseFloat(str.replace(',', '.'));
@@ -66,7 +96,7 @@ function num(str) {
  * the bare-decimal-pair rule, so we return a "weak" token instead of null
  * when the number merely *could* be a decimal degree).
  */
-function parseToken(m, text) {
+function parseToken(m, text, rules) {
   const g = m.groups;
   const start = m.index;
   const end = m.index + m[0].length;
@@ -136,11 +166,13 @@ function parseToken(m, text) {
 
   const isDMS = min != null;
   // Strong tokens stand on their own. Weak tokens are bare numbers that only
-  // count if they pair up with a partner.
+  // count if they pair up with a partner. Bare integers only exist at the
+  // highest intensity, and even then only ever as one half of a pair.
   let strength;
   if (evidence >= 2) strength = 'strong';
   else if (evidence === 1 && (degHasFraction || isDMS)) strength = 'medium';
-  else if (degHasFraction && g.deg.split(/[.,]/)[1].length >= 2) strength = 'weak';
+  else if (degHasFraction && g.deg.split(/[.,]/)[1].length >= rules.weakDecimals) strength = 'weak';
+  else if (rules.allowBare) strength = 'bare';
   else return null; // bare integer with no evidence: not even wide-net worthy
 
   return {
@@ -152,13 +184,14 @@ function parseToken(m, text) {
 }
 
 /** Find every candidate token in a block of text. */
-export function findTokens(text) {
+export function findTokens(text, intensity = DEFAULT_INTENSITY) {
+  const rules = intensityRules(intensity);
   const re = TOKEN_REGEX();
   const tokens = [];
   let m;
   while ((m = re.exec(text)) !== null) {
     if (m[0].trim() === '') { re.lastIndex = m.index + 1; continue; }
-    const t = parseToken(m, text);
+    const t = parseToken(m, text, rules);
     if (t) tokens.push(t);
     // Continue scanning right after the matched degrees number so an
     // absorbed neighbour can still be found if parseToken rejected this one.
@@ -171,11 +204,9 @@ export function findTokens(text) {
 // Pairing
 // ---------------------------------------------------------------------------
 
-const MAX_GAP = 40; // chars between the two halves of a pair
-
-function gapIsClean(text, a, b) {
+function gapIsClean(text, a, b, maxGap) {
   const between = text.slice(a.end, b.start);
-  if (between.length > MAX_GAP) return false;
+  if (between.length > maxGap) return false;
   if (/\d/.test(between)) return false; // another number lives in between
   // separators / connective tissue only
   return /^[\s ,;:/|()\[\]–—-]*(?:and|by|to|x)?[\s ,;:/|()\[\]–—-]*$/i.test(between);
@@ -190,7 +221,8 @@ function compatible(a, b) {
  * Pair tokens into {lat, lon} coordinates. Unpaired strong tokens are kept
  * as half-empty pairs; unpaired weak tokens are discarded.
  */
-export function pairTokens(tokens, text) {
+export function pairTokens(tokens, text, intensity = DEFAULT_INTENSITY) {
+  const rules = intensityRules(intensity);
   const pairs = [];
   const used = new Set();
 
@@ -199,11 +231,15 @@ export function pairTokens(tokens, text) {
     const a = tokens[i];
     const b = tokens[i + 1];
 
-    if (b && !used.has(i + 1) && gapIsClean(text, a, b) && compatible(a, b)) {
+    if (b && !used.has(i + 1) && gapIsClean(text, a, b, rules.maxGap) && compatible(a, b)) {
       // Weak tokens must both be plausible decimal degrees to pair.
       const weakPair = a.strength === 'weak' && b.strength === 'weak';
       const anyStrong = a.strength === 'strong' || b.strength === 'strong';
-      const ok = anyStrong || a.strength === 'medium' || b.strength === 'medium' || weakPair;
+      let ok;
+      if (rules.pairNeeds === 'both-strong') ok = a.strength === 'strong' && b.strength === 'strong';
+      else if (rules.pairNeeds === 'one-strong') ok = anyStrong;
+      else if (rules.allowBare) ok = true; // level 5: any two candidates may pair
+      else ok = anyStrong || a.strength === 'medium' || b.strength === 'medium' || weakPair;
       if (ok) {
         let lat = a, lon = b;
         if (a.axis === 'lon' || b.axis === 'lat') { lat = b; lon = a; }
@@ -220,7 +256,11 @@ export function pairTokens(tokens, text) {
     }
 
     // Lone token: keep only if it can stand on its own.
-    if (a.strength === 'strong') {
+    const loneOk =
+      rules.keepLone === 'strong' ? a.strength === 'strong'
+        : rules.keepLone === 'strong+medium' ? a.strength === 'strong' || a.strength === 'medium'
+          : false;
+    if (loneOk) {
       if (a.axis === 'lon' || Math.abs(a.dd) > 90) pairs.push({ lat: null, lon: a });
       else pairs.push({ lat: a, lon: null });
       used.add(i);
@@ -230,8 +270,65 @@ export function pairTokens(tokens, text) {
 }
 
 /** One-call helper: text in, coordinate pairs out. */
-export function extractCoordinates(text) {
-  return pairTokens(findTokens(text), text);
+export function extractCoordinates(text, intensity = DEFAULT_INTENSITY) {
+  return pairTokens(findTokens(text, intensity), text, intensity);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-page pairs
+// ---------------------------------------------------------------------------
+
+// How many chars of the end of one page / start of the next to inspect.
+export const CROSS_PAGE_WINDOW = 240;
+
+/**
+ * Find coordinate pairs that straddle the boundary between two consecutive
+ * pages (latitude at the bottom of one page, longitude at the top of the
+ * next — or a single token broken by the page break). Pairs that live
+ * entirely on one page are ignored: the per-page scan already has those.
+ *
+ * Each returned token additionally carries `segs`: the character ranges it
+ * occupies, in each page's own text coordinates:
+ *   [{page: 'prev'|'next', start, end}, …]
+ */
+export function extractCrossPage(prevText, nextText, intensity = DEFAULT_INTENSITY, window = CROSS_PAGE_WINDOW) {
+  const tailStart = Math.max(0, prevText.length - window);
+  const tail = prevText.slice(tailStart);
+  const head = nextText.slice(0, window);
+  const joint = tail + '\n' + head;
+  const boundary = tail.length; // index of the '\n' we inserted
+  const out = [];
+  for (const pair of extractCoordinates(joint, intensity)) {
+    if (!pair.lat || !pair.lon) continue; // half-pairs can't span pages
+    const s = Math.min(pair.lat.start, pair.lon.start);
+    const e = Math.max(pair.lat.end, pair.lon.end);
+    if (!(s < boundary && e > boundary + 1)) continue; // must actually cross
+    out.push({
+      lat: withSegments(pair.lat, boundary, tailStart),
+      lon: withSegments(pair.lon, boundary, tailStart),
+    });
+  }
+  return out;
+}
+
+// Map a token found in the joined tail+head text back onto the two pages.
+function withSegments(tok, boundary, tailStart) {
+  const segs = [];
+  if (tok.start < boundary) {
+    segs.push({
+      page: 'prev',
+      start: tailStart + tok.start,
+      end: tailStart + Math.min(tok.end, boundary),
+    });
+  }
+  if (tok.end > boundary + 1) {
+    segs.push({
+      page: 'next',
+      start: Math.max(0, tok.start - boundary - 1),
+      end: tok.end - boundary - 1,
+    });
+  }
+  return { ...tok, segs };
 }
 
 // ---------------------------------------------------------------------------
