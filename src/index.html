@@ -9,6 +9,13 @@
 </head>
 <body>
   <header id="toolbar">
+    <div class="tb-group" id="project-group" title="Projects keep separate PDFs, rows and settings — switch any time, everything is saved">
+      <span class="tb-label">Project:</span>
+      <select id="project-select"></select>
+      <button id="btn-proj-new" title="Create a new project">＋</button>
+      <button id="btn-proj-rename" title="Rename this project">✎</button>
+      <button id="btn-proj-del" title="Delete this project and its saved session">🗑</button>
+    </div>
     <div class="tb-group">
       <button id="btn-open-folder" title="Scan every PDF in a folder (recursive)">Open Folder…</button>
       <button id="btn-open-files" title="Pick individual PDF files">Open PDFs…</button>
@@ -18,6 +25,11 @@
       <label><input type="radio" name="fmt" value="dd" checked /> DD</label>
       <label><input type="radio" name="fmt" value="dms" /> DMS</label>
       <label><input type="radio" name="fmt" value="both" /> Both (DD 3/4, DMS 5/6)</label>
+    </div>
+    <div class="tb-group" id="intensity-group" title="How aggressively the regex net hunts for coordinates — re-scans loaded PDFs on change">
+      <span class="tb-label">Net:</span>
+      <input type="range" id="intensity" min="1" max="5" step="1" value="3" />
+      <span id="intensity-name" class="muted">Balanced</span>
     </div>
     <div class="tb-group">
       <label title="Show pages without any detected coordinates too">
@@ -42,6 +54,7 @@
         <div class="tool-row">
           <button id="btn-add-row" title="Append an empty row">+ Row</button>
           <button id="btn-del-rows" title="Delete the selected rows">Delete Selected</button>
+          <button id="btn-del-flagged" class="hidden danger" title="Delete every row the LLM flagged as a false positive">🗑 Delete Flagged</button>
           <span id="sel-info" class="muted"></span>
         </div>
         <div class="tool-row" id="fill-tools" title="Mass-enter a value into column 1 or 2">
@@ -129,6 +142,8 @@
           <label><input type="checkbox" id="llm-verify" checked /> Verify coordinates against the PDF text</label>
           <label><input type="checkbox" id="llm-fill" checked /> Fill columns 1 &amp; 2 from the PDF text</label>
           <label><input type="checkbox" id="llm-overwrite" /> Overwrite non-empty cells in columns 1 &amp; 2</label>
+          <label title="Rows the LLM thinks are not real coordinates get a 🗑 flag — you decide what to delete"><input type="checkbox" id="llm-flagdel" /> Flag suspected false positives 🗑</label>
+          <label class="danger-opt" title="No confirmation per row — flagged rows are removed immediately. LLMs make mistakes."><input type="checkbox" id="llm-autodel" disabled /> …delete flagged rows automatically <strong>(dangerous)</strong></label>
         </fieldset>
 
         <label class="wide">Add to the prompt <span class="muted">(what columns 1–2 mean, what to look for, …)</span>
@@ -140,6 +155,17 @@
       <menu>
         <button value="cancel" id="llm-close" type="submit">Close</button>
         <button type="button" id="llm-run" class="primary">Run</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="name-dialog">
+    <form method="dialog">
+      <h2 id="name-dialog-title">Project name</h2>
+      <input id="name-input" type="text" spellcheck="false" autocomplete="off" />
+      <menu>
+        <button value="cancel" type="submit">Cancel</button>
+        <button value="ok" type="submit" class="primary">OK</button>
       </menu>
     </form>
   </dialog>

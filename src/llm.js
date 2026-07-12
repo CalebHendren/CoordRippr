@@ -193,6 +193,8 @@ export function normalizeResult(r) {
     col1: typeof r.col1 === 'string' ? r.col1.trim() : '',
     col2: typeof r.col2 === 'string' ? r.col2.trim() : '',
     note: typeof r.note === 'string' ? r.note.trim().slice(0, 400) : '',
+    // Only a literal true marks a row for deletion — anything else is "keep".
+    del: r.delete === true,
   };
   return out.row ? out : null;
 }
@@ -205,8 +207,9 @@ export function normalizeResult(r) {
  * @param {string} p.extra  user's additional instructions
  * @param {boolean} p.verify
  * @param {boolean} p.fill
+ * @param {boolean} p.flagDelete  ask the model to flag false-positive rows
  */
-export function buildPrompt({ rows, pages, headers, extra, verify, fill }) {
+export function buildPrompt({ rows, pages, headers, extra, verify, fill, flagDelete }) {
   const tasks = [];
   if (verify) {
     tasks.push(
@@ -224,6 +227,14 @@ export function buildPrompt({ rows, pages, headers, extra, verify, fill }) {
         `and a second distinguishing attribute for col2. Keep values short. Use "" when the text offers nothing.`
     );
   }
+  if (flagDelete) {
+    tasks.push(
+      `- FLAG false positives: set "delete": true on rows whose values are clearly NOT geographic coordinates ` +
+        `(dates, years, measurements, page or figure numbers, sample counts, citation spans, ratios, …) ` +
+        `based on the surrounding text, and say why in "note". ` +
+        `Set "delete": false whenever the row is, or even might be, a real coordinate — when in doubt, keep it.`
+    );
+  }
 
   const system =
     `You are a meticulous data-extraction assistant for CoordRippr, a tool that pulls geographic coordinates out of PDFs. ` +
@@ -232,7 +243,8 @@ export function buildPrompt({ rows, pages, headers, extra, verify, fill }) {
     `Respond with ONLY a JSON array, no prose, one object per row:\n` +
     `[{"row": "<row id exactly as given>", "verdict": "ok"|"mismatch"|"not_found", ` +
     `"lat": <decimal degrees or null>, "lon": <decimal degrees or null>, ` +
-    `"col1": "<string>", "col2": "<string>", "note": "<one short sentence of reasoning>"}]\n\n` +
+    `"col1": "<string>", "col2": "<string>"${flagDelete ? ', "delete": true|false' : ''}, ` +
+    `"note": "<one short sentence of reasoning>"}]\n\n` +
     `Include every row you were given exactly once. Never invent coordinates that are not grounded in the text.`;
 
   const lines = [];
