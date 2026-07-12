@@ -1475,7 +1475,9 @@ $('#llm-run').addEventListener('click', async () => {
   // NOT already sending the whole PDF.
   const perPage = s.perPage && s.scope !== 'all';
   const allowPrev = s.fill && s.scope !== 'all';
+  const allowNext = s.fill && s.scope !== 'all';
   const MAX_PREV_PASSES = 3; // how far back a stubborn row may walk, one page per pass
+  const MAX_NEXT_PASSES = 3; // how far forward a stubborn row may walk, one page per pass
 
   // rowId -> context for retries and the deletion report.
   const meta = new Map();
@@ -1483,14 +1485,15 @@ $('#llm-run').addEventListener('click', async () => {
     for (const r of w.rows) meta.set(r.id, { num: r.num, file: w.file.name, page: r.page, fileRec: w.file, llmRow: r });
   }
   const prevRows = new Set(); // rows that got a previous-page retry
+  const nextRows = new Set(); // rows that got a next-page retry
   let stopped = false; // hard stop (auth failure)
 
   // One request: build prompt, send, parse. Applies nothing itself.
-  const sendChunk = async (chunk, label, allowPrevHere) => {
+  const sendChunk = async (chunk, label, allowPrevHere, allowNextHere = false) => {
     const { system, user } = buildPrompt({
       rows: chunk.rows, pages: chunk.pages, cols: state.cols,
       extra: s.extra, verify: s.verify, fill: s.fill, flagDelete: s.flagDelete,
-      notes: s.notes, notesSpec: s.notesSpec, allowPrev: allowPrevHere,
+      notes: s.notes, notesSpec: s.notesSpec, allowPrev: allowPrevHere, allowNext: allowNextHere,
     });
     const req = buildRequest({
       kind: s.kind, url: s.url, model: s.model, apiKey: s.key,
@@ -1541,6 +1544,17 @@ $('#llm-run').addEventListener('click', async () => {
     }
   };
 
+  // rowId -> latest page to include on the next next-page pass.
+  const needNext = new Map();
+  const collectNextRequests = (results, forwardTo) => {
+    for (const res of results) {
+      if (!res.needNext) continue;
+      const m = meta.get(res.row);
+      if (!m || forwardTo > m.fileRec.numPages) continue;
+      if (state.rows.some((r) => r.id === res.row)) needNext.set(res.row, forwardTo);
+    }
+  };
+
   try {
     llmStatus('Extracting page text…');
     const chunks = [];
@@ -1557,7 +1571,7 @@ $('#llm-run').addEventListener('click', async () => {
       const chunk = chunks[n];
       const where = perPage ? `${chunk.pages[0].file} p.${chunk.pages[0].page}` : chunk.pages[0].file;
       llmStatus(`Request ${n + 1}/${chunks.length} — ${chunk.rows.length} row${chunk.rows.length === 1 ? '' : 's'} from ${where}…`);
-      const results = await sendChunk(chunk, `Request ${n + 1}`, allowPrev);
+      const results = await sendChunk(chunk, `Request ${n + 1}`, allowPrev, allowNext);
       if (!results) continue;
       markSent(chunk.rows);
       applyAndRender(results);
@@ -1565,6 +1579,12 @@ $('#llm-run').addEventListener('click', async () => {
         for (const res of results) {
           const m = res.needPrev && meta.get(res.row);
           if (m && m.page > 1 && state.rows.some((r) => r.id === res.row)) needPrev.set(res.row, m.page - 1);
+        }
+      }
+      if (allowNext) {
+        for (const res of results) {
+          const m = res.needNext && meta.get(res.row);
+          if (m && m.page < m.fileRec.numPages && state.rows.some((r) => r.id === res.row)) needNext.set(res.row, m.page + 1);
         }
       }
     }
@@ -1602,6 +1622,40 @@ $('#llm-run').addEventListener('click', async () => {
         if (canGoFurther) collectPrevRequests(results, g.backTo - 1);
       }
     }
+
+    // Next-page passes: rows the model couldn't fill from their own page are
+    // automatically resent with the following page(s) included, walking
+    // forward one more page per pass (stopping at each file's last page).
+    for (let pass = 1; pass <= MAX_NEXT_PASSES && needNext.size && !llmAbort && !stopped; pass++) {
+      const groups = new Map(); // same file + page window -> one request
+      for (const [rowId, forwardTo] of needNext) {
+        const m = meta.get(rowId);
+        if (!m) continue;
+        const key = `${m.fileRec.id}:${m.page}:${forwardTo}`;
+        if (!groups.has(key)) groups.set(key, { fileRec: m.fileRec, page: m.page, forwardTo, rows: [] });
+        groups.get(key).rows.push(m.llmRow);
+        nextRows.add(rowId);
+      }
+      needNext.clear();
+      let gi = 0;
+      for (const g of groups.values()) {
+        if (llmAbort || stopped) break;
+        gi++;
+        llmStatus(
+          `Next-page pass ${pass}, request ${gi}/${groups.size} — ` +
+          `resending ${g.rows.length} row${g.rows.length === 1 ? '' : 's'} with pages ${g.page}–${g.forwardTo} of ${g.fileRec.name}…`
+        );
+        const pages = [];
+        for (let num = g.page; num <= g.forwardTo; num++) {
+          pages.push({ file: g.fileRec.name, page: num, text: await pageTextFor(g.fileRec, num) });
+        }
+        const canGoFurther = g.forwardTo < g.fileRec.numPages && pass < MAX_NEXT_PASSES;
+        const results = await sendChunk({ pages, rows: g.rows }, `Next-page pass ${pass}`, false, canGoFurther);
+        if (!results) continue;
+        applyAndRender(results);
+        if (canGoFurther) collectNextRequests(results, g.forwardTo + 1);
+      }
+    }
   } catch (err) {
     counts.errors.push(err && err.message ? err.message : String(err));
   }
@@ -1613,6 +1667,7 @@ $('#llm-run').addEventListener('click', async () => {
   if (s.fill) parts.push(`${counts.filled} cell${counts.filled === 1 ? '' : 's'} filled`);
   if (s.notes) parts.push(`${counts.noted} note${counts.noted === 1 ? '' : 's'} written`);
   if (prevRows.size) parts.push(`${prevRows.size} row${prevRows.size === 1 ? '' : 's'} re-sent with earlier pages`);
+  if (nextRows.size) parts.push(`${nextRows.size} row${nextRows.size === 1 ? '' : 's'} re-sent with later pages`);
   if (s.unsentOnly && skippedSent) parts.push(`${skippedSent} already-sent row${skippedSent === 1 ? '' : 's'} skipped`);
   if (s.flagDelete) {
     parts.push(s.autoDelete
