@@ -206,6 +206,8 @@ export function normalizeResult(r, colCount = 2) {
     del: r.delete === true,
     // Only a literal true counts as "please resend with the previous page".
     needPrev: r.need_prev === true,
+    // Only a literal true counts as "please resend with the next page".
+    needNext: r.need_next === true,
   };
   return out.row ? out : null;
 }
@@ -222,8 +224,9 @@ export function normalizeResult(r, colCount = 2) {
  * @param {boolean} p.notes      fill the extra Notes column ("notes_col")
  * @param {string}  p.notesSpec  what the user wants the notes to contain
  * @param {boolean} p.allowPrev  model may request the preceding page via "need_prev"
+ * @param {boolean} p.allowNext  model may request the following page via "need_next"
  */
-export function buildPrompt({ rows, pages, cols, extra, verify, fill, flagDelete, notes, notesSpec, allowPrev }) {
+export function buildPrompt({ rows, pages, cols, extra, verify, fill, flagDelete, notes, notesSpec, allowPrev, allowNext }) {
   const colKeys = cols.map((_, i) => `"col${i + 1}"`);
   const tasks = [];
   if (verify) {
@@ -245,6 +248,11 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, flagDelete
           ? ` If the information a column needs is not in the text provided but likely sits on the page just before ` +
             `(e.g. a table or list that started earlier), set "need_prev": true on that row and leave the unknown ` +
             `columns "" — the row will be resent to you with the preceding page included.`
+          : '') +
+        (allowNext
+          ? ` If the information a column needs is not in the text provided but likely sits on the page just after ` +
+            `(e.g. a table or list that continues onto the following page), set "need_next": true on that row and leave the unknown ` +
+            `columns "" — the row will be resent to you with the next page included.`
           : '')
     );
   }
@@ -274,7 +282,8 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, flagDelete
     `${colKeys.map((k) => `${k}: "<string>"`).join(', ')}` +
     `${notes ? ', "notes_col": "<string>"' : ''}` +
     `${flagDelete ? ', "delete": true|false' : ''}` +
-    `${allowPrev ? ', "need_prev": true|false' : ''}, ` +
+    `${allowPrev ? ', "need_prev": true|false' : ''}` +
+    `${allowNext ? ', "need_next": true|false' : ''}, ` +
     `"note": "<one short sentence of reasoning>"}]\n\n` +
     `Include every row you were given exactly once. Never invent coordinates that are not grounded in the text.`;
 
