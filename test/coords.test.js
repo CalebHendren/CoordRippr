@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   findTokens,
   extractCoordinates,
+  extractCrossPage,
   parseSingle,
   formatDD,
   formatDMS,
@@ -164,6 +165,82 @@ test('multiple pairs in one block', () => {
   const text = `Site A: 41°24'12"N 2°10'26"E. Later, Site B: 33.8688 S, 151.2093 E.`;
   const pairs = extractCoordinates(text);
   assert.equal(pairs.length, 2);
+});
+
+// --- intensity levels ------------------------------------------------------
+
+test('intensity 1 requires strong evidence on both halves', () => {
+  // Bare decimal pair: fine at default, dropped at strict.
+  assert.equal(extractCoordinates(`Barcelona (41.40338, 2.17403)`, 1).length, 0);
+  assert.equal(extractCoordinates(`Barcelona (41.40338, 2.17403)`, 3).length, 1);
+  // Both halves strong: kept even at strict.
+  assert.equal(extractCoordinates(`41°24'12"N 2°10'26"E`, 1).length, 1);
+  // Lone strong token: dropped at strict, kept from level 2 up.
+  assert.equal(extractCoordinates(`latitude of 41°24'12"N only`, 1).length, 0);
+  assert.equal(extractCoordinates(`latitude of 41°24'12"N only`, 2).length, 1);
+});
+
+test('intensity 2 needs one unambiguous half to pair', () => {
+  assert.equal(extractCoordinates(`Barcelona (41.40338, 2.17403)`, 2).length, 0);
+  assert.equal(extractCoordinates(`stations at 33.8688 S, 151.2093 E`, 2).length, 1);
+});
+
+test('intensity 4 pairs single-decimal numbers', () => {
+  const text = `the site (41.4, 2.2) was sampled`;
+  assert.equal(extractCoordinates(text, 3).length, 0); // needs 2 decimals at default
+  const wide = extractCoordinates(text, 4);
+  assert.equal(wide.length, 1);
+  close(wide[0].lat.dd, 41.4);
+});
+
+test('intensity 5 pairs bare integers', () => {
+  const pairs = extractCoordinates(`grid cell 41, 2 in the survey`, 5);
+  assert.equal(pairs.length, 1);
+  close(pairs[0].lat.dd, 41);
+  close(pairs[0].lon.dd, 2);
+  // …which stays rejected at every lower level.
+  assert.equal(extractCoordinates(`grid cell 41, 2 in the survey`, 4).length, 0);
+});
+
+test('default intensity is unchanged historical behaviour', () => {
+  assert.equal(
+    extractCoordinates(`In 2019 we sampled 45 sites over 12 days.`).length,
+    extractCoordinates(`In 2019 we sampled 45 sites over 12 days.`, 3).length
+  );
+});
+
+// --- cross-page pairs -------------------------------------------------------
+
+test('pair split across a page boundary is found', () => {
+  const prev = `Some intro text. The colony was located at 41°24'12"N`;
+  const next = `2°10'26"E as recorded in the field notes.`;
+  const pairs = extractCrossPage(prev, next);
+  assert.equal(pairs.length, 1);
+  close(pairs[0].lat.dd, 41.40333);
+  close(pairs[0].lon.dd, 2.17389);
+  // lat sits entirely on the previous page, lon on the next
+  assert.deepEqual(pairs[0].lat.segs.map((s) => s.page), ['prev']);
+  assert.deepEqual(pairs[0].lon.segs.map((s) => s.page), ['next']);
+  // segment offsets are page-local: they slice back to the matched text
+  const latSeg = pairs[0].lat.segs[0];
+  assert.match(prev.slice(latSeg.start, latSeg.end), /41°24'12"N/);
+  const lonSeg = pairs[0].lon.segs[0];
+  assert.match(next.slice(lonSeg.start, lonSeg.end), /2°10'26"E/);
+});
+
+test('single token broken by the page break maps to both pages', () => {
+  const prev = `data were collected at 41°`;
+  const next = `24'12"N, 2°10'26"E during spring`;
+  const pairs = extractCrossPage(prev, next);
+  assert.equal(pairs.length, 1);
+  close(pairs[0].lat.dd, 41.40333);
+  assert.deepEqual(pairs[0].lat.segs.map((s) => s.page), ['prev', 'next']);
+});
+
+test('pairs entirely on one page are not reported as cross-page', () => {
+  const prev = `site A: 41°24'12"N 2°10'26"E — done.`;
+  const next = `site B: 33°52'8"S 151°12'33"E — done.`;
+  assert.equal(extractCrossPage(prev, next).length, 0);
 });
 
 // --- parseSingle / formatting -------------------------------------------

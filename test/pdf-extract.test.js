@@ -6,7 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { buildPageText, rectsForRange } from '../src/pdftext.js';
-import { findTokens, pairTokens } from '../src/coords.js';
+import { findTokens, pairTokens, extractCrossPage } from '../src/coords.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(__dirname, 'fixtures', 'sample.pdf');
@@ -69,6 +69,12 @@ test('detected matches map back to page rectangles', () => {
       }
     }
   }
+});
+
+test('the page 1 → page 2 boundary yields no phantom cross-page pairs', () => {
+  const pairs = extractCrossPage(pages[0].text, pages[1].text);
+  assert.equal(pairs.length, 0,
+    `phantom cross-page pairs: ${JSON.stringify(pairs.map((p) => [p.lat?.raw, p.lon?.raw]))}`);
 });
 
 test('line-broken pair spans two lines of the column', () => {

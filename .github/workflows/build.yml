@@ -22,6 +22,32 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm test
 
+  # On a push to main, decide whether this commit should be released: yes only
+  # when package.json's version has no matching v<version> git tag yet. That
+  # makes "bump the version and merge to main" the single release trigger.
+  gate:
+    name: Release gate
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $TAG is new — this commit will be released."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Package (${{ matrix.name }})
     needs: test
@@ -67,8 +93,13 @@ jobs:
 
   release:
     name: GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    # Released either by pushing a v* tag, or automatically on a push to main
+    # once the version in package.json has been bumped (see the gate job).
+    needs: [build, gate]
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/v') || needs.gate.outputs.release == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -79,5 +110,8 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          # On a tag push the ref supplies the tag; on a main push the gate job
+          # computed v<version> and softprops creates that tag at this commit.
+          tag_name: ${{ needs.gate.outputs.tag || github.ref_name }}
           files: artifacts/*
           generate_release_notes: true
