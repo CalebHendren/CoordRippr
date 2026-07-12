@@ -101,6 +101,17 @@ ipcMain.handle('save-csv', async (_e, { defaultName, content }) => {
   return res.filePath;
 });
 
+// Binary PDF save (used for the highlighted-PDF export).
+ipcMain.handle('save-pdf', async (_e, { defaultName, data }) => {
+  const res = await dialog.showSaveDialog({
+    defaultPath: defaultName || 'highlighted.pdf',
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  await fs.writeFile(res.filePath, Buffer.from(data));
+  return res.filePath;
+});
+
 // Generic HTTPS fetch proxied through the main process: used for LLM API
 // calls (avoids renderer CORS restrictions) and the GitHub release check.
 ipcMain.handle('net-fetch', async (_e, { url, method = 'GET', headers = {}, body = null }) => {

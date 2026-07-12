@@ -46,7 +46,8 @@
     </div>
     <div class="tb-spacer"></div>
     <div class="tb-group">
-      <button id="btn-llm" title="Verify coordinates and fill columns 1–2 with an LLM (your own API key)">✨ LLM Assist…</button>
+      <button id="btn-llm" title="Verify coordinates and fill the data columns with an LLM (your own API key)">✨ LLM Assist…</button>
+      <button id="btn-save-hl" title="Save the currently viewed PDF as a copy with the coordinate highlights baked in">Highlighted PDF…</button>
       <button id="btn-export" class="primary">Export CSV…</button>
     </div>
   </header>
@@ -56,13 +57,15 @@
       <div id="csv-tools">
         <div class="tool-row">
           <button id="btn-add-row" title="Append an empty row">+ Row</button>
+          <button id="btn-add-col" title="Add another data column (2 by default)">+ Col</button>
+          <button id="btn-del-col" title="Remove the last data column">− Col</button>
           <button id="btn-del-rows" title="Delete the selected rows">Delete Selected</button>
           <button id="btn-del-flagged" class="hidden danger" title="Delete every row the LLM flagged as a false positive">🗑 Delete Flagged</button>
           <span id="sel-info" class="muted"></span>
         </div>
-        <div class="tool-row" id="fill-tools" title="Mass-enter a value into column 1 or 2">
+        <div class="tool-row" id="fill-tools" title="Mass-enter a value into a data column">
           <span class="tb-label">Fill</span>
-          <select id="fill-col"><option value="c1">Col 1</option><option value="c2">Col 2</option></select>
+          <select id="fill-col"><option value="0">Col 1</option><option value="1">Col 2</option></select>
           <span>rows</span>
           <input id="fill-from" type="number" min="1" placeholder="2" />
           <span>–</span>
@@ -138,15 +141,24 @@
           <legend>PDF text to send</legend>
           <label><input type="radio" name="llm-scope" value="coords" checked /> Only pages with detected coordinates</label>
           <label><input type="radio" name="llm-scope" value="all" /> Full PDFs (all pages)</label>
+          <label title="Each page's rows go out with only that page's text — smaller, more focused requests. If the model can't fill a column from its page, the previous page is sent automatically. Ignored when full PDFs are sent."><input type="checkbox" id="llm-perpage" checked /> One request per page</label>
         </fieldset>
 
         <fieldset class="wide">
           <legend>Tasks</legend>
           <label><input type="checkbox" id="llm-verify" checked /> Verify coordinates against the PDF text</label>
-          <label><input type="checkbox" id="llm-fill" checked /> Fill columns 1 &amp; 2 from the PDF text</label>
-          <label><input type="checkbox" id="llm-overwrite" /> Overwrite non-empty cells in columns 1 &amp; 2</label>
+          <label><input type="checkbox" id="llm-fill" checked /> Fill the data columns from the PDF text</label>
+          <label><input type="checkbox" id="llm-overwrite" /> Overwrite non-empty cells</label>
           <label title="Rows the LLM thinks are not real coordinates get a 🗑 flag — you decide what to delete"><input type="checkbox" id="llm-flagdel" /> Flag suspected false positives 🗑</label>
           <label class="danger-opt" title="No confirmation per row — flagged rows are removed immediately. LLMs make mistakes."><input type="checkbox" id="llm-autodel" disabled /> …delete flagged rows automatically <strong>(dangerous)</strong></label>
+        </fieldset>
+
+        <fieldset class="wide">
+          <legend>Notes column</legend>
+          <label title="Adds a Notes column to the right of the source column, filled by the LLM. It only exists if you run with this checked."><input type="checkbox" id="llm-notes" /> Add an LLM-filled “Notes” column</label>
+          <label class="notes-spec">what the notes should contain
+            <input id="llm-notes-spec" type="text" disabled placeholder="e.g. the habitat described near each coordinate" />
+          </label>
         </fieldset>
 
         <label class="wide">Add to the prompt <span class="muted">(what columns 1–2 mean, what to look for, …)</span>
