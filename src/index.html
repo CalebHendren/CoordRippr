@@ -156,7 +156,7 @@
           <legend>PDF text to send</legend>
           <label><input type="radio" name="llm-scope" value="coords" checked /> Only pages with detected coordinates</label>
           <label><input type="radio" name="llm-scope" value="all" /> Full PDFs (all pages)</label>
-          <label title="Each page's rows go out with only that page's text — smaller, more focused requests. If the model can't fill a column from its page, the previous page is sent automatically. Ignored when full PDFs are sent."><input type="checkbox" id="llm-perpage" checked /> One request per page</label>
+          <label title="Each page's rows go out with only that page's text — smaller, more focused requests. If the model can't fill a column from its page, the previous or next page is sent automatically. Ignored when full PDFs are sent."><input type="checkbox" id="llm-perpage" checked /> One request per page</label>
         </fieldset>
 
         <fieldset class="wide">
