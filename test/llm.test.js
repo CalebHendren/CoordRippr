@@ -8,6 +8,8 @@ import {
   normalizeResult,
   buildPrompt,
   chunkWork,
+  chunkPerPage,
+  MAX_ROWS_PER_CHUNK,
 } from '../src/llm.js';
 
 test('anthropic request shape', () => {
@@ -96,10 +98,16 @@ test('parseResultsJson handles fences and prose', () => {
 test('normalizeResult validates fields', () => {
   const r = normalizeResult({ row: 'r5', verdict: 'mismatch', lat: 41.4, lon: 2.17, col1: ' Fox ', col2: 'red', note: 'n' });
   assert.equal(r.verdict, 'mismatch');
-  assert.equal(r.col1, 'Fox');
+  assert.deepEqual(r.cols, ['Fox', 'red']);
   assert.equal(normalizeResult({ verdict: 'ok' }), null); // no row id
   assert.equal(normalizeResult({ row: 'r1', verdict: 'nonsense', lat: 999 }).verdict, null);
   assert.equal(normalizeResult({ row: 'r1', lat: 999 }).lat, null); // out of range
+});
+
+test('normalizeResult reads as many colN fields as asked', () => {
+  const r = normalizeResult({ row: 'r1', col1: 'a', col2: 'b', col3: ' c ', col4: 7 }, 4);
+  assert.deepEqual(r.cols, ['a', 'b', 'c', '']); // non-strings become ""
+  assert.deepEqual(normalizeResult({ row: 'r1', col1: 'a', col2: 'b', col3: 'ignored' }).cols, ['a', 'b']);
 });
 
 test('normalizeResult only honours a literal delete: true', () => {
@@ -109,11 +117,19 @@ test('normalizeResult only honours a literal delete: true', () => {
   assert.equal(normalizeResult({ row: 'r1' }).del, false);
 });
 
-test('buildPrompt includes rows, headers and page markers', () => {
+test('normalizeResult only honours a literal need_prev: true, and reads notes_col', () => {
+  assert.equal(normalizeResult({ row: 'r1', need_prev: true }).needPrev, true);
+  assert.equal(normalizeResult({ row: 'r1', need_prev: 'yes' }).needPrev, false);
+  assert.equal(normalizeResult({ row: 'r1' }).needPrev, false);
+  assert.equal(normalizeResult({ row: 'r1', notes_col: ' shady creek ' }).notesCol, 'shady creek');
+  assert.equal(normalizeResult({ row: 'r1' }).notesCol, '');
+});
+
+test('buildPrompt includes rows, column names and page markers', () => {
   const { system, user } = buildPrompt({
-    rows: [{ id: 'r1', num: 1, c1: '', c2: '', lat: 41.4, lon: 2.17, file: 'a.pdf', page: 3 }],
+    rows: [{ id: 'r1', num: 1, cells: ['', ''], lat: 41.4, lon: 2.17, file: 'a.pdf', page: 3 }],
     pages: [{ file: 'a.pdf', page: 3, text: 'The fox at 41.4, 2.17 was red.' }],
-    headers: { c1: 'Animal', c2: 'Color' },
+    cols: ['Animal', 'Color'],
     extra: 'Focus on mammals.',
     verify: true,
     fill: true,
@@ -126,24 +142,65 @@ test('buildPrompt includes rows, headers and page markers', () => {
   assert.match(user, /Focus on mammals\./);
 });
 
+test('buildPrompt scales the schema and fill task to N columns', () => {
+  const { system, user } = buildPrompt({
+    rows: [{ id: 'r1', num: 1, cells: ['x', 'y', 'z'], lat: 1, lon: 2, file: 'a.pdf', page: 1 }],
+    pages: [{ file: 'a.pdf', page: 1, text: 't' }],
+    cols: ['Site', 'Species', 'Depth'],
+    extra: '', verify: false, fill: true,
+  });
+  assert.match(system, /"col1"/);
+  assert.match(system, /"col3"/);
+  assert.doesNotMatch(system, /"col4"/);
+  assert.match(system, /"Depth"/);
+  assert.match(user, /Site \| Species \| Depth/);
+  assert.match(user, /x \| y \| z/);
+});
+
 test('buildPrompt omits task text when disabled', () => {
   const { system } = buildPrompt({
-    rows: [], pages: [], headers: { c1: 'A', c2: 'B' }, extra: '', verify: true, fill: false,
+    rows: [], pages: [], cols: ['A', 'B'], extra: '', verify: true, fill: false,
   });
   assert.match(system, /VERIFY/);
   assert.doesNotMatch(system, /FILL/);
   assert.doesNotMatch(system, /FLAG/);
   assert.doesNotMatch(system, /"delete"/);
+  assert.doesNotMatch(system, /"need_prev"/);
+  assert.doesNotMatch(system, /"notes_col"/);
 });
 
 test('buildPrompt adds the FLAG task and delete field when requested', () => {
   const { system } = buildPrompt({
-    rows: [], pages: [], headers: { c1: 'A', c2: 'B' }, extra: '',
+    rows: [], pages: [], cols: ['A', 'B'], extra: '',
     verify: false, fill: false, flagDelete: true,
   });
   assert.match(system, /FLAG false positives/);
   assert.match(system, /"delete": true\|false/);
   assert.match(system, /when in doubt, keep it/);
+});
+
+test('buildPrompt offers need_prev only when fill and allowPrev are on', () => {
+  const on = buildPrompt({
+    rows: [], pages: [], cols: ['A', 'B'], extra: '',
+    verify: false, fill: true, allowPrev: true,
+  });
+  assert.match(on.system, /"need_prev": true\|false/);
+  assert.match(on.system, /preceding page/);
+  const off = buildPrompt({
+    rows: [], pages: [], cols: ['A', 'B'], extra: '',
+    verify: false, fill: true, allowPrev: false,
+  });
+  assert.doesNotMatch(off.system, /"need_prev"/);
+});
+
+test('buildPrompt adds the NOTES task with the user spec', () => {
+  const { system } = buildPrompt({
+    rows: [], pages: [], cols: ['A', 'B'], extra: '',
+    verify: false, fill: false, notes: true, notesSpec: 'the habitat near each coordinate',
+  });
+  assert.match(system, /NOTES/);
+  assert.match(system, /"notes_col": "<string>"/);
+  assert.match(system, /the habitat near each coordinate/);
 });
 
 test('chunkWork splits by budget and keeps rows with their pages', () => {
@@ -173,5 +230,34 @@ test('chunkWork drops rowless chunks and truncates oversized pages', () => {
   const rows = [{ id: 'r1', page: 1 }];
   const chunks = chunkWork(pages, rows, 1000);
   assert.equal(chunks.length, 1);
+  assert.ok(chunks[0].pages[0].text.includes('truncated'));
+});
+
+test('chunkPerPage sends each page alone with only its own rows', () => {
+  const pages = [
+    { file: 'f', page: 5, text: 'five' },
+    { file: 'f', page: 7, text: 'seven' },
+    { file: 'f', page: 9, text: 'nine (no rows)' },
+  ];
+  const rows = [
+    { id: 'r1', page: 7 },
+    { id: 'r2', page: 7 },
+    { id: 'r3', page: 5 },
+  ];
+  const chunks = chunkPerPage(pages, rows);
+  assert.equal(chunks.length, 2); // page 9 has no rows -> skipped
+  assert.equal(chunks[0].pages.length, 1);
+  assert.equal(chunks[0].pages[0].page, 5);
+  assert.deepEqual(chunks[0].rows.map((r) => r.id), ['r3']);
+  assert.equal(chunks[1].pages[0].page, 7);
+  assert.deepEqual(chunks[1].rows.map((r) => r.id), ['r1', 'r2']);
+});
+
+test('chunkPerPage truncates huge pages and splits over-full row sets', () => {
+  const rows = Array.from({ length: MAX_ROWS_PER_CHUNK + 5 }, (_, i) => ({ id: `r${i}`, page: 1 }));
+  const chunks = chunkPerPage([{ file: 'f', page: 1, text: 'x'.repeat(5000) }], rows, 1000);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].rows.length, MAX_ROWS_PER_CHUNK);
+  assert.equal(chunks[1].rows.length, 5);
   assert.ok(chunks[0].pages[0].text.includes('truncated'));
 });

@@ -4,7 +4,7 @@
 // covers them); the storage object is the IndexedDB glue and only touches
 // indexedDB when called.
 
-export const SNAPSHOT_VERSION = 1;
+export const SNAPSHOT_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Pure snapshot packing / unpacking
@@ -20,7 +20,8 @@ export function packState(state, nextId) {
     v: SNAPSHOT_VERSION,
     savedAt: Date.now(),
     nextId,
-    headers: { ...state.headers },
+    cols: [...state.cols],
+    notesOn: !!state.notesOn,
     fmt: state.fmt,
     showAll: !!state.showAll,
     showHighlights: state.showHighlights !== false,
@@ -42,7 +43,7 @@ export function packState(state, nextId) {
       span: d.span || null,
     })),
     rows: state.rows.map((r) => ({
-      id: r.id, c1: r.c1, c2: r.c2,
+      id: r.id, cells: [...(r.cells || [])], notes: r.notes || '',
       lat: r.lat, lon: r.lon, latRaw: r.latRaw, lonRaw: r.lonRaw,
       src: r.src ? { ...r.src } : null,
       llm: r.llm ? { ...r.llm } : undefined,
@@ -72,16 +73,26 @@ export function unpackState(snap) {
       num: p.num, w: p.w, h: p.h, proxy: null, dets: [...(p.dets || [])],
     })),
   }));
-  const rows = (snap.rows || []).map((r) => ({
-    id: r.id, c1: r.c1 || '', c2: r.c2 || '',
-    lat: r.lat ?? null, lon: r.lon ?? null,
-    latRaw: r.latRaw ?? null, lonRaw: r.lonRaw ?? null,
-    src: r.src || null,
-    ...(r.llm ? { llm: r.llm } : {}),
-  }));
+  // v2 stores a column-name array; v1 stored {c1, c2} headers.
+  const cols = Array.isArray(snap.cols) && snap.cols.length
+    ? snap.cols.map((c) => String(c ?? ''))
+    : [snap.headers?.c1 ?? 'Field 1', snap.headers?.c2 ?? 'Field 2'];
+  const rows = (snap.rows || []).map((r) => {
+    // v2 rows carry a cells array; v1 rows carried c1/c2.
+    const cells = Array.isArray(r.cells) ? r.cells.map((c) => String(c ?? '')) : [r.c1 || '', r.c2 || ''];
+    while (cells.length < cols.length) cells.push('');
+    return {
+      id: r.id, cells: cells.slice(0, cols.length), notes: r.notes || '',
+      lat: r.lat ?? null, lon: r.lon ?? null,
+      latRaw: r.latRaw ?? null, lonRaw: r.lonRaw ?? null,
+      src: r.src || null,
+      ...(r.llm ? { llm: r.llm } : {}),
+    };
+  });
   return {
     nextId: Number(snap.nextId) || 1,
-    headers: { c1: 'Field 1', c2: 'Field 2', ...(snap.headers || {}) },
+    cols,
+    notesOn: !!snap.notesOn,
     fmt: snap.fmt || 'dd',
     showAll: !!snap.showAll,
     showHighlights: snap.showHighlights !== false, // default on (old snapshots too)

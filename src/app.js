@@ -9,8 +9,9 @@ import {
 import { buildPageText, rectsForRange } from './pdftext.js';
 import {
   PROVIDERS, buildRequest, extractText, parseResultsJson, normalizeResult,
-  buildPrompt, chunkWork,
+  buildPrompt, chunkWork, chunkPerPage,
 } from './llm.js';
+import { buildImagePdf } from './pdfout.js';
 import { RELEASES_API, RELEASES_PAGE, KOFI_URL, isNewer, isDue } from './updates.js';
 import { packState, unpackState, storage } from './persist.js';
 
@@ -33,8 +34,9 @@ const PDF_OPEN_OPTS = {
 const state = {
   files: [], // {id, name, path, doc, error, numPages, pages:[{num,w,h,proxy,dets:[]}]}
   dets: new Map(), // detId -> {id, fileId, pageNum, rects, rowId, half, raw, span}
-  rows: [], // {id, c1, c2, lat, lon, latRaw, lonRaw, src:{fileId,pageNum,latDet,lonDet,extraDets?}}
-  headers: { c1: 'Field 1', c2: 'Field 2' },
+  rows: [], // {id, cells:[…], notes, lat, lon, latRaw, lonRaw, src:{fileId,pageNum,latDet,lonDet,extraDets?}}
+  cols: ['Field 1', 'Field 2'], // data column headers (2 by default, user can add more)
+  notesOn: false, // the LLM-filled Notes column exists only after a notes run
   fmt: 'dd', // 'dd' | 'dms' | 'both'
   showAll: false,
   showHighlights: true,
@@ -54,6 +56,9 @@ let projects = [];
 
 let nextId = 1;
 const uid = (p) => `${p}${nextId++}`;
+
+const emptyCells = () => state.cols.map(() => '');
+const cellVal = (row, i) => (row.cells && row.cells[i]) || '';
 
 const $ = (sel) => document.querySelector(sel);
 const pagesEl = $('#pages');
@@ -168,7 +173,7 @@ function addDetectedRow(file, ctx, pair, reuse = null) {
     row.src = { fileId: file.id, pageNum: pageRec.num, latDet: null, lonDet: null };
   } else {
     row = {
-      id: uid('r'), c1: '', c2: '',
+      id: uid('r'), cells: emptyCells(), notes: '',
       lat: pair.lat ? pair.lat.dd : null,
       lon: pair.lon ? pair.lon.dd : null,
       latRaw: null, lonRaw: null,
@@ -242,7 +247,7 @@ function addCrossPageRow(file, prevCtx, curCtx, pair, reuse = null) {
     row.src = { fileId: file.id, pageNum: latPage, latDet: null, lonDet: null, extraDets: [] };
   } else {
     row = {
-      id: uid('r'), c1: '', c2: '',
+      id: uid('r'), cells: emptyCells(), notes: '',
       lat: pair.lat.dd, lon: pair.lon.dd,
       latRaw: null, lonRaw: null,
       src: { fileId: file.id, pageNum: latPage, latDet: null, lonDet: null, extraDets: [] },
@@ -524,6 +529,18 @@ function cellText(row, col) {
   return col.mode === 'dms' ? formatDMS(dd, col.field) : formatDD(dd);
 }
 
+// Keep the fill-tool column picker in sync with the data columns.
+function renderFillCols() {
+  const sel = $('#fill-col');
+  const prev = sel.value;
+  sel.innerHTML =
+    state.cols
+      .map((name, i) => `<option value="${i}">${escapeHtml(name.trim() || `Col ${i + 1}`)}</option>`)
+      .join('') +
+    (state.notesOn ? `<option value="notes">Notes</option>` : '');
+  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+}
+
 function renderTable() {
   const cols = coordColumns();
 
@@ -532,10 +549,13 @@ function renderTable() {
   const hr = document.createElement('tr');
   hr.innerHTML =
     `<th class="rownum">#</th>` +
-    `<th><input data-h="c1" value="${escapeHtml(state.headers.c1)}" title="Column 1 header (editable)"/></th>` +
-    `<th><input data-h="c2" value="${escapeHtml(state.headers.c2)}" title="Column 2 header (editable)"/></th>` +
+    state.cols
+      .map((name, i) =>
+        `<th><input data-h="${i}" value="${escapeHtml(name)}" title="Column ${i + 1} header (editable)"/></th>`)
+      .join('') +
     cols.map((c) => `<th>${c.label}</th>`).join('') +
-    `<th class="srcinfo" title="Where the coordinate was found (not exported)">source</th>`;
+    `<th class="srcinfo" title="Where the coordinate was found (not exported)">source</th>` +
+    (state.notesOn ? `<th class="notescol" title="LLM-filled Notes column (exported)">Notes</th>` : '');
   theadEl.appendChild(hr);
 
   // Body
@@ -548,6 +568,7 @@ function renderTable() {
   const delFlaggedBtn = $('#btn-del-flagged');
   delFlaggedBtn.classList.toggle('hidden', flagged === 0);
   delFlaggedBtn.textContent = `🗑 Delete Flagged (${flagged})`;
+  renderFillCols();
   refreshRowClasses();
 }
 
@@ -561,14 +582,14 @@ function buildRowEl(row, cols) {
   tdNum.textContent = idx + 1;
   tr.appendChild(tdNum);
 
-  for (const field of ['c1', 'c2']) {
+  state.cols.forEach((_, i) => {
     const td = document.createElement('td');
     const input = document.createElement('input');
-    input.value = row[field];
-    input.dataset.field = field;
+    input.value = cellVal(row, i);
+    input.dataset.cell = String(i);
     td.appendChild(input);
     tr.appendChild(td);
-  }
+  });
 
   cols.forEach((col, i) => {
     const td = document.createElement('td');
@@ -621,6 +642,16 @@ function buildRowEl(row, cols) {
     tdSrc.appendChild(document.createTextNode('—'));
   }
   tr.appendChild(tdSrc);
+
+  if (state.notesOn) {
+    const tdNotes = document.createElement('td');
+    tdNotes.className = 'notescol';
+    const input = document.createElement('input');
+    input.value = row.notes || '';
+    input.dataset.field = 'notes';
+    tdNotes.appendChild(input);
+    tr.appendChild(tdNotes);
+  }
   return tr;
 }
 
@@ -642,8 +673,9 @@ function refreshRowCoordCells(tr, row) {
 
 theadEl.addEventListener('change', (e) => {
   const h = e.target.dataset.h;
-  if (h) {
-    state.headers[h] = e.target.value;
+  if (h != null) {
+    state.cols[Number(h)] = e.target.value;
+    renderFillCols();
     persistSoon();
   }
 });
@@ -655,8 +687,14 @@ tbodyEl.addEventListener('change', (e) => {
   if (!row) return;
   const field = input.dataset.field;
 
-  if (field === 'c1' || field === 'c2') {
-    row[field] = input.value;
+  if (input.dataset.cell != null) {
+    if (!row.cells) row.cells = emptyCells();
+    row.cells[Number(input.dataset.cell)] = input.value;
+    persistSoon();
+    return;
+  }
+  if (field === 'notes') {
+    row.notes = input.value;
     persistSoon();
     return;
   }
@@ -912,13 +950,36 @@ async function rescanAll() {
 
 $('#btn-add-row').addEventListener('click', () => {
   state.rows.push({
-    id: uid('r'), c1: '', c2: '', lat: null, lon: null,
+    id: uid('r'), cells: emptyCells(), notes: '', lat: null, lon: null,
     latRaw: null, lonRaw: null, src: null,
   });
   renderTable();
   refreshCounts();
   persistSoon();
   tbodyEl.lastElementChild?.scrollIntoView({ block: 'nearest' });
+});
+
+$('#btn-add-col').addEventListener('click', () => {
+  state.cols.push(`Field ${state.cols.length + 1}`);
+  for (const r of state.rows) {
+    if (!r.cells) r.cells = [];
+    while (r.cells.length < state.cols.length) r.cells.push('');
+  }
+  renderTable();
+  persistSoon();
+});
+
+$('#btn-del-col').addEventListener('click', () => {
+  if (state.cols.length <= 2) { setStatus('The first two data columns are permanent.'); return; }
+  const idx = state.cols.length - 1;
+  const hasData = state.rows.some((r) => cellVal(r, idx).trim());
+  if (hasData && !confirm(`Column "${state.cols[idx]}" contains values — remove it and its data anyway?`)) return;
+  state.cols.pop();
+  for (const r of state.rows) {
+    if (r.cells) r.cells = r.cells.slice(0, state.cols.length);
+  }
+  renderTable();
+  persistSoon();
 });
 
 $('#btn-del-rows').addEventListener('click', () => {
@@ -943,10 +1004,17 @@ $('#btn-del-flagged').addEventListener('click', () => {
   setStatus(`Deleted ${flagged.length} LLM-flagged row${flagged.length === 1 ? '' : 's'}.`);
 });
 
-function applyFill(rowIds, colField, value) {
+function applyFill(rowIds, colKey, value) {
   let n = 0;
   for (const row of state.rows) {
-    if (rowIds.has(row.id)) { row[colField] = value; n++; }
+    if (!rowIds.has(row.id)) continue;
+    if (colKey === 'notes') {
+      row.notes = value;
+    } else {
+      if (!row.cells) row.cells = emptyCells();
+      row.cells[Number(colKey)] = value;
+    }
+    n++;
   }
   renderTable();
   persistSoon();
@@ -978,10 +1046,15 @@ function csvEscape(v) {
 
 function buildCsv() {
   const cols = coordColumns();
-  const header = [state.headers.c1, state.headers.c2, ...cols.map((c) => c.label)];
+  const header = [...state.cols, ...cols.map((c) => c.label)];
+  if (state.notesOn) header.push('Notes');
   const lines = [header.map(csvEscape).join(',')];
   for (const row of state.rows) {
-    const cells = [row.c1, row.c2, ...cols.map((c) => cellText(row, c))];
+    const cells = [
+      ...state.cols.map((_, i) => cellVal(row, i)),
+      ...cols.map((c) => cellText(row, c)),
+    ];
+    if (state.notesOn) cells.push(row.notes || '');
     lines.push(cells.map(csvEscape).join(','));
   }
   return lines.join('\r\n') + '\r\n';
@@ -994,6 +1067,68 @@ $('#btn-export').addEventListener('click', async () => {
     content: buildCsv(),
   });
   setStatus(saved ? `Saved ${saved}` : 'Export cancelled.');
+});
+
+// ---------------------------------------------------------------------------
+// Save the current PDF with its highlights baked in (rendered pages + the
+// yellow detection rectangles, re-assembled into a new PDF).
+// ---------------------------------------------------------------------------
+
+const HL_EXPORT_SCALE = 2; // render resolution: 144 dpi keeps text readable
+
+async function renderHighlightedPage(pageRec) {
+  const viewport = pageRec.proxy.getViewport({ scale: HL_EXPORT_SCALE });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+  const ctx = canvas.getContext('2d');
+  await pageRec.proxy.render({ canvasContext: ctx, viewport }).promise;
+  for (const detId of pageRec.dets) {
+    const det = state.dets.get(detId);
+    if (!det) continue;
+    for (const rect of det.rects) {
+      const [x1, y1, x2, y2] = viewport.convertToViewportRectangle(rect);
+      const [x, y] = [Math.min(x1, x2) - 2, Math.min(y1, y2) - 1];
+      const [w, h] = [Math.abs(x2 - x1) + 4, Math.abs(y2 - y1) + 2];
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.42)';
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(x, y, w, h);
+    }
+  }
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.9));
+  if (!blob) throw new Error('Could not encode a page image');
+  return {
+    w: pageRec.w, h: pageRec.h,
+    pw: canvas.width, ph: canvas.height,
+    jpeg: new Uint8Array(await blob.arrayBuffer()),
+  };
+}
+
+$('#btn-save-hl').addEventListener('click', async () => {
+  if (state.busy) { setStatus('Busy — try again when the current job finishes.'); return; }
+  const file = state.files.find((f) => f.id === state.currentFile);
+  if (!file || file.error || !file.doc) { setStatus('Open a PDF first (the currently viewed PDF is saved).'); return; }
+  state.busy = true;
+  try {
+    const pages = [];
+    for (const pageRec of file.pages) {
+      setStatus(`Rendering ${file.name} page ${pageRec.num}/${file.pages.length}…`, true);
+      pages.push(await renderHighlightedPage(pageRec));
+    }
+    setStatus('Building PDF…', true);
+    const bytes = buildImagePdf(pages);
+    const saved = await api.savePdf({
+      defaultName: file.name.replace(/\.pdf$/i, '') + '-highlighted.pdf',
+      data: bytes,
+    });
+    setStatus(saved ? `Saved ${saved}` : 'Save cancelled.');
+  } catch (err) {
+    setStatus(`Could not save the highlighted PDF: ${err && err.message ? err.message : err}`);
+  } finally {
+    state.busy = false;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1073,10 +1208,19 @@ function initLlmDialog() {
   if (prefs.fill != null) $('#llm-fill').checked = prefs.fill;
   if (prefs.overwrite != null) $('#llm-overwrite').checked = prefs.overwrite;
   if (prefs.flagDelete != null) $('#llm-flagdel').checked = prefs.flagDelete;
+  if (prefs.perPage != null) $('#llm-perpage').checked = prefs.perPage;
+  if (prefs.notes != null) $('#llm-notes').checked = prefs.notes;
+  if (prefs.notesSpec) $('#llm-notes-spec').value = prefs.notesSpec;
   // Auto-delete is deliberately NOT restored from prefs: it's dangerous, so
   // it must be opted into per run.
   syncAutoDelState();
   $('#llm-flagdel').addEventListener('change', syncAutoDelState);
+  syncPerPageState();
+  for (const radio of document.querySelectorAll('input[name="llm-scope"]')) {
+    radio.addEventListener('change', syncPerPageState);
+  }
+  syncNotesState();
+  $('#llm-notes').addEventListener('change', syncNotesState);
   syncLlmProviderFields();
   sel.addEventListener('change', syncLlmProviderFields);
 }
@@ -1088,6 +1232,16 @@ function syncAutoDelState() {
   auto.disabled = !flag;
 }
 
+// Per-page batching only applies when we're NOT sending the whole PDF.
+function syncPerPageState() {
+  const wholePdf = document.querySelector('input[name="llm-scope"]:checked').value === 'all';
+  $('#llm-perpage').disabled = wholePdf;
+}
+
+function syncNotesState() {
+  $('#llm-notes-spec').disabled = !$('#llm-notes').checked;
+}
+
 function collectLlmSettings() {
   const id = $('#llm-provider').value;
   const s = {
@@ -1097,12 +1251,15 @@ function collectLlmSettings() {
     url: $('#llm-url').value.trim(),
     key: $('#llm-key').value.trim(),
     scope: document.querySelector('input[name="llm-scope"]:checked').value,
+    perPage: $('#llm-perpage').checked,
     extra: $('#llm-extra').value,
     verify: $('#llm-verify').checked,
     fill: $('#llm-fill').checked,
     overwrite: $('#llm-overwrite').checked,
     flagDelete: $('#llm-flagdel').checked,
     autoDelete: $('#llm-flagdel').checked && $('#llm-autodel').checked,
+    notes: $('#llm-notes').checked,
+    notesSpec: $('#llm-notes-spec').value,
   };
   const prefs = llmPrefs();
   prefs.provider = id;
@@ -1110,11 +1267,14 @@ function collectLlmSettings() {
   prefs.urls[id] = s.url;
   prefs.keys[id] = s.key;
   prefs.scope = s.scope;
+  prefs.perPage = s.perPage;
   prefs.extra = s.extra;
   prefs.verify = s.verify;
   prefs.fill = s.fill;
   prefs.overwrite = s.overwrite;
   prefs.flagDelete = s.flagDelete;
+  prefs.notes = s.notes;
+  prefs.notesSpec = s.notesSpec;
   localStorage.setItem(LLM_PREFS_KEY, JSON.stringify(prefs));
   return s;
 }
@@ -1128,7 +1288,7 @@ function buildLlmWork(scope) {
     state.rows.forEach((r, i) => {
       if (r.src && r.src.fileId === file.id) {
         rows.push({
-          id: r.id, num: i + 1, c1: r.c1, c2: r.c2,
+          id: r.id, num: i + 1, cells: [...(r.cells || [])],
           lat: r.lat != null ? Number(r.lat.toFixed(6)) : null,
           lon: r.lon != null ? Number(r.lon.toFixed(6)) : null,
           file: file.name, page: r.src.pageNum,
@@ -1151,7 +1311,7 @@ async function pageTextFor(file, pageNum) {
   return buildPageText(tc).text;
 }
 
-function applyLlmResults(results, s, counts) {
+function applyLlmResults(results, s, counts, meta) {
   const toDelete = new Set();
   for (const res of results) {
     const row = state.rows.find((r) => r.id === res.row);
@@ -1161,13 +1321,25 @@ function applyLlmResults(results, s, counts) {
       counts[res.verdict]++;
     }
     if (s.fill) {
-      if (res.col1 && (s.overwrite || !String(row.c1 || '').trim())) { row.c1 = res.col1; counts.filled++; }
-      if (res.col2 && (s.overwrite || !String(row.c2 || '').trim())) { row.c2 = res.col2; counts.filled++; }
+      if (!row.cells) row.cells = emptyCells();
+      res.cols.forEach((v, i) => {
+        if (i >= state.cols.length || !v) return;
+        if (s.overwrite || !String(row.cells[i] || '').trim()) { row.cells[i] = v; counts.filled++; }
+      });
+    }
+    if (s.notes && res.notesCol && (s.overwrite || !String(row.notes || '').trim())) {
+      row.notes = res.notesCol;
+      counts.noted++;
     }
     if (s.flagDelete && res.del) {
       if (s.autoDelete) {
         toDelete.add(row.id);
         counts.deleted++;
+        const m = meta && meta.get(row.id);
+        counts.deletedInfo.push(
+          `#${m ? m.num : '?'} — ${row.lat ?? '(no lat)'}, ${row.lon ?? '(no lon)'}` +
+          `${m ? ` (${m.file} p.${m.page})` : ''}: ${res.note || 'no reason given'}`
+        );
       } else {
         row.llm = { ...(row.llm || {}), del: true, note: res.note || (row.llm && row.llm.note) || '' };
         counts.flagged++;
@@ -1192,7 +1364,7 @@ $('#llm-run').addEventListener('click', async () => {
   if (!s.url) return llmStatus('Enter an endpoint URL.');
   if (!s.model) return llmStatus('Enter a model name.');
   if (!s.key && s.provider !== 'custom') return llmStatus('Enter your API key.');
-  if (!s.verify && !s.fill && !s.flagDelete) return llmStatus('Pick at least one task.');
+  if (!s.verify && !s.fill && !s.flagDelete && !s.notes) return llmStatus('Pick at least one task.');
   if (s.autoDelete) {
     const sure = confirm(
       'Automatic deletion is enabled: rows the LLM flags as false positives will be ' +
@@ -1207,7 +1379,77 @@ $('#llm-run').addEventListener('click', async () => {
   llmRunning = true;
   llmAbort = false;
   $('#llm-run').textContent = 'Stop';
-  const counts = { ok: 0, mismatch: 0, not_found: 0, filled: 0, flagged: 0, deleted: 0, errors: [] };
+  const counts = {
+    ok: 0, mismatch: 0, not_found: 0, filled: 0, noted: 0,
+    flagged: 0, deleted: 0, deletedInfo: [], errors: [],
+  };
+
+  // The Notes column comes into existence the first time a notes run starts
+  // (and then sticks around — it holds user data).
+  if (s.notes && !state.notesOn) {
+    state.notesOn = true;
+    renderTable();
+  }
+
+  // Per-page batching and previous-page requests only make sense when we're
+  // NOT already sending the whole PDF.
+  const perPage = s.perPage && s.scope !== 'all';
+  const allowPrev = s.fill && s.scope !== 'all';
+  const MAX_PREV_PASSES = 3; // how far back a stubborn row may walk, one page per pass
+
+  // rowId -> context for retries and the deletion report.
+  const meta = new Map();
+  for (const w of work) {
+    for (const r of w.rows) meta.set(r.id, { num: r.num, file: w.file.name, page: r.page, fileRec: w.file, llmRow: r });
+  }
+  const prevRows = new Set(); // rows that got a previous-page retry
+  let stopped = false; // hard stop (auth failure)
+
+  // One request: build prompt, send, parse. Applies nothing itself.
+  const sendChunk = async (chunk, label, allowPrevHere) => {
+    const { system, user } = buildPrompt({
+      rows: chunk.rows, pages: chunk.pages, cols: state.cols,
+      extra: s.extra, verify: s.verify, fill: s.fill, flagDelete: s.flagDelete,
+      notes: s.notes, notesSpec: s.notesSpec, allowPrev: allowPrevHere,
+    });
+    const req = buildRequest({
+      kind: s.kind, url: s.url, model: s.model, apiKey: s.key,
+      system, user, browser: IS_WEB,
+    });
+    const res = await api.netFetch(req);
+    if (res.error) throw new Error(res.error);
+    if (!res.ok) {
+      let detail = (res.text || '').slice(0, 300);
+      try { extractText(s.kind, res.text); } catch (e) { detail = e.message; }
+      counts.errors.push(`HTTP ${res.status}: ${detail}`);
+      if (res.status === 401 || res.status === 403) stopped = true; // bad key: no point continuing
+      return null;
+    }
+    const results = parseResultsJson(extractText(s.kind, res.text))
+      .map((x) => normalizeResult(x, state.cols.length))
+      .filter(Boolean);
+    if (results.length === 0) {
+      counts.errors.push(`${label}: the model returned no parseable JSON results.`);
+      return null;
+    }
+    return results;
+  };
+
+  const applyAndRender = (results) => {
+    const deletedBefore = counts.deleted;
+    applyLlmResults(results, s, counts, meta);
+    if (counts.deleted > deletedBefore) renderAll();
+    else renderTable();
+  };
+
+  // rowId -> earliest page to include on the next previous-page pass.
+  const needPrev = new Map();
+  const collectPrevRequests = (results, backTo) => {
+    for (const res of results) {
+      if (!res.needPrev || backTo < 1) continue;
+      if (state.rows.some((r) => r.id === res.row)) needPrev.set(res.row, backTo);
+    }
+  };
 
   try {
     llmStatus('Extracting page text…');
@@ -1217,41 +1459,57 @@ $('#llm-run').addEventListener('click', async () => {
       for (const num of w.pageNums) {
         pages.push({ file: w.file.name, page: num, text: await pageTextFor(w.file, num) });
       }
-      chunks.push(...chunkWork(pages, w.rows));
+      chunks.push(...(perPage ? chunkPerPage(pages, w.rows) : chunkWork(pages, w.rows)));
     }
 
     for (let n = 0; n < chunks.length; n++) {
-      if (llmAbort) break;
+      if (llmAbort || stopped) break;
       const chunk = chunks[n];
-      llmStatus(`Request ${n + 1}/${chunks.length} — ${chunk.rows.length} row${chunk.rows.length === 1 ? '' : 's'} from ${chunk.pages[0].file}…`);
-      const { system, user } = buildPrompt({
-        rows: chunk.rows, pages: chunk.pages, headers: state.headers,
-        extra: s.extra, verify: s.verify, fill: s.fill, flagDelete: s.flagDelete,
-      });
-      const req = buildRequest({
-        kind: s.kind, url: s.url, model: s.model, apiKey: s.key,
-        system, user, browser: IS_WEB,
-      });
-      const res = await api.netFetch(req);
-      if (res.error) throw new Error(res.error);
-      if (!res.ok) {
-        let detail = (res.text || '').slice(0, 300);
-        try { extractText(s.kind, res.text); } catch (e) { detail = e.message; }
-        counts.errors.push(`HTTP ${res.status}: ${detail}`);
-        if (res.status === 401 || res.status === 403) break; // bad key: no point continuing
-        continue;
+      const where = perPage ? `${chunk.pages[0].file} p.${chunk.pages[0].page}` : chunk.pages[0].file;
+      llmStatus(`Request ${n + 1}/${chunks.length} — ${chunk.rows.length} row${chunk.rows.length === 1 ? '' : 's'} from ${where}…`);
+      const results = await sendChunk(chunk, `Request ${n + 1}`, allowPrev);
+      if (!results) continue;
+      applyAndRender(results);
+      if (allowPrev) {
+        for (const res of results) {
+          const m = res.needPrev && meta.get(res.row);
+          if (m && m.page > 1 && state.rows.some((r) => r.id === res.row)) needPrev.set(res.row, m.page - 1);
+        }
       }
-      const results = parseResultsJson(extractText(s.kind, res.text))
-        .map(normalizeResult)
-        .filter(Boolean);
-      if (results.length === 0) {
-        counts.errors.push(`Request ${n + 1}: the model returned no parseable JSON results.`);
-        continue;
+    }
+
+    // Previous-page passes: rows the model couldn't fill from their own page
+    // are automatically resent with the preceding page(s) included, walking
+    // back one more page per pass.
+    for (let pass = 1; pass <= MAX_PREV_PASSES && needPrev.size && !llmAbort && !stopped; pass++) {
+      const groups = new Map(); // same file + page window -> one request
+      for (const [rowId, backTo] of needPrev) {
+        const m = meta.get(rowId);
+        if (!m) continue;
+        const key = `${m.fileRec.id}:${m.page}:${backTo}`;
+        if (!groups.has(key)) groups.set(key, { fileRec: m.fileRec, page: m.page, backTo, rows: [] });
+        groups.get(key).rows.push(m.llmRow);
+        prevRows.add(rowId);
       }
-      const deletedBefore = counts.deleted;
-      applyLlmResults(results, s, counts);
-      if (counts.deleted > deletedBefore) renderAll();
-      else renderTable();
+      needPrev.clear();
+      let gi = 0;
+      for (const g of groups.values()) {
+        if (llmAbort || stopped) break;
+        gi++;
+        llmStatus(
+          `Previous-page pass ${pass}, request ${gi}/${groups.size} — ` +
+          `resending ${g.rows.length} row${g.rows.length === 1 ? '' : 's'} with pages ${g.backTo}–${g.page} of ${g.fileRec.name}…`
+        );
+        const pages = [];
+        for (let num = g.backTo; num <= g.page; num++) {
+          pages.push({ file: g.fileRec.name, page: num, text: await pageTextFor(g.fileRec, num) });
+        }
+        const canGoFurther = g.backTo > 1 && pass < MAX_PREV_PASSES;
+        const results = await sendChunk({ pages, rows: g.rows }, `Previous-page pass ${pass}`, canGoFurther);
+        if (!results) continue;
+        applyAndRender(results);
+        if (canGoFurther) collectPrevRequests(results, g.backTo - 1);
+      }
     }
   } catch (err) {
     counts.errors.push(err && err.message ? err.message : String(err));
@@ -1262,12 +1520,18 @@ $('#llm-run').addEventListener('click', async () => {
   const parts = [];
   if (s.verify) parts.push(`verified ${counts.ok} ✓ · ${counts.mismatch} ⚠ mismatch · ${counts.not_found} ? not found`);
   if (s.fill) parts.push(`${counts.filled} cell${counts.filled === 1 ? '' : 's'} filled`);
+  if (s.notes) parts.push(`${counts.noted} note${counts.noted === 1 ? '' : 's'} written`);
+  if (prevRows.size) parts.push(`${prevRows.size} row${prevRows.size === 1 ? '' : 's'} re-sent with earlier pages`);
   if (s.flagDelete) {
     parts.push(s.autoDelete
       ? `${counts.deleted} row${counts.deleted === 1 ? '' : 's'} auto-deleted`
       : `${counts.flagged} row${counts.flagged === 1 ? '' : 's'} flagged 🗑 (click a flag or "Delete Flagged" to remove)`);
   }
   let msg = `${llmAbort ? 'Stopped early — ' : 'Done — '}${parts.join('; ')}.`;
+  if (counts.deletedInfo.length) {
+    msg += `\nDeleted rows (row numbers as sent to the LLM):\n• ${counts.deletedInfo.slice(0, 15).join('\n• ')}`;
+    if (counts.deletedInfo.length > 15) msg += `\n…and ${counts.deletedInfo.length - 15} more`;
+  }
   if (counts.errors.length) msg += `\nProblems:\n• ${counts.errors.slice(0, 5).join('\n• ')}`;
   msg += '\n⚠️ LLM output is not ground truth — verify it against the PDFs yourself.';
   llmStatus(msg);
@@ -1332,7 +1596,8 @@ function resetState() {
   state.files = [];
   state.dets = new Map();
   state.rows = [];
-  state.headers = { c1: 'Field 1', c2: 'Field 2' };
+  state.cols = ['Field 1', 'Field 2'];
+  state.notesOn = false;
   state.fmt = 'dd';
   state.showAll = false;
   state.showHighlights = true;
@@ -1395,7 +1660,8 @@ async function restoreProject(id) {
     state.files = data.files;
     state.dets = data.dets;
     state.rows = data.rows;
-    state.headers = data.headers;
+    state.cols = data.cols;
+    state.notesOn = data.notesOn;
     state.fmt = data.fmt;
     state.showAll = data.showAll;
     state.showHighlights = data.showHighlights;

@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('coordrippr', {
   choosePdfs: () => ipcRenderer.invoke('choose-pdfs'),
   readFile: (p) => ipcRenderer.invoke('read-file', p),
   saveCsv: (opts) => ipcRenderer.invoke('save-csv', opts),
+  savePdf: (opts) => ipcRenderer.invoke('save-pdf', opts),
   netFetch: (opts) => ipcRenderer.invoke('net-fetch', opts),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   getVersion: () => ipcRenderer.invoke('get-version'),
