@@ -125,6 +125,12 @@ test('normalizeResult only honours a literal need_prev: true, and reads notes_co
   assert.equal(normalizeResult({ row: 'r1' }).notesCol, '');
 });
 
+test('normalizeResult only honours a literal need_next: true', () => {
+  assert.equal(normalizeResult({ row: 'r1', need_next: true }).needNext, true);
+  assert.equal(normalizeResult({ row: 'r1', need_next: 'yes' }).needNext, false);
+  assert.equal(normalizeResult({ row: 'r1' }).needNext, false);
+});
+
 test('buildPrompt includes rows, column names and page markers', () => {
   const { system, user } = buildPrompt({
     rows: [{ id: 'r1', num: 1, cells: ['', ''], lat: 41.4, lon: 2.17, file: 'a.pdf', page: 3 }],
@@ -191,6 +197,20 @@ test('buildPrompt offers need_prev only when fill and allowPrev are on', () => {
     verify: false, fill: true, allowPrev: false,
   });
   assert.doesNotMatch(off.system, /"need_prev"/);
+});
+
+test('buildPrompt offers need_next only when fill and allowNext are on', () => {
+  const on = buildPrompt({
+    rows: [], pages: [], cols: ['A', 'B'], extra: '',
+    verify: false, fill: true, allowNext: true,
+  });
+  assert.match(on.system, /"need_next": true\|false/);
+  assert.match(on.system, /following page/);
+  const off = buildPrompt({
+    rows: [], pages: [], cols: ['A', 'B'], extra: '',
+    verify: false, fill: true, allowNext: false,
+  });
+  assert.doesNotMatch(off.system, /"need_next"/);
 });
 
 test('buildPrompt adds the NOTES task with the user spec', () => {
