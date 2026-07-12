@@ -77,6 +77,17 @@ if (!window.coordrippr) {
       return a.download;
     },
 
+    async savePdf({ defaultName, data }) {
+      const blob = new Blob([data], { type: 'application/pdf' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = defaultName || 'highlighted.pdf';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+      return a.download;
+    },
+
     async netFetch({ url, method = 'GET', headers = {}, body = null }) {
       if (!/^https:\/\//i.test(url)) throw new Error('Only https:// URLs are allowed');
       try {
