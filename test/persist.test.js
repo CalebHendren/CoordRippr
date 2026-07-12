@@ -22,14 +22,15 @@ function sampleState() {
     dets,
     rows: [
       {
-        id: 'r1', c1: 'Fox', c2: 'red', lat: 41.40333, lon: null,
+        id: 'r1', cells: ['Fox', 'red', 'forest'], notes: 'seen at dusk', lat: 41.40333, lon: null,
         latRaw: null, lonRaw: 'garbage',
         src: { fileId: 'f1', pageNum: 2, latDet: 'd1', lonDet: null },
         llm: { verdict: 'ok', note: 'looks right' },
       },
-      { id: 'r2', c1: '', c2: '', lat: null, lon: null, latRaw: null, lonRaw: null, src: null },
+      { id: 'r2', cells: ['', '', ''], notes: '', lat: null, lon: null, latRaw: null, lonRaw: null, src: null },
     ],
-    headers: { c1: 'Animal', c2: 'Color' },
+    cols: ['Animal', 'Color', 'Habitat'],
+    notesOn: true,
     fmt: 'both',
     showAll: true,
     showHighlights: false,
@@ -59,7 +60,8 @@ test('pack → unpack round trip preserves the session', () => {
   const state = sampleState();
   const restored = unpackState(JSON.parse(JSON.stringify(packState(state, 42))));
   assert.equal(restored.nextId, 42);
-  assert.deepEqual(restored.headers, { c1: 'Animal', c2: 'Color' });
+  assert.deepEqual(restored.cols, ['Animal', 'Color', 'Habitat']);
+  assert.equal(restored.notesOn, true);
   assert.equal(restored.fmt, 'both');
   assert.equal(restored.showAll, true);
   assert.equal(restored.showHighlights, false);
@@ -78,12 +80,32 @@ test('pack → unpack round trip preserves the session', () => {
   assert.deepEqual(det.span, [100, 111]);
 
   assert.equal(restored.rows.length, 2);
-  assert.equal(restored.rows[0].c1, 'Fox');
+  assert.deepEqual(restored.rows[0].cells, ['Fox', 'red', 'forest']);
+  assert.equal(restored.rows[0].notes, 'seen at dusk');
   assert.equal(restored.rows[0].lonRaw, 'garbage');
   assert.equal(restored.rows[0].llm.verdict, 'ok');
   assert.equal(restored.rows[0].src.latDet, 'd1');
   assert.equal(restored.rows[1].src, null);
   assert.equal(restored.rows[1].llm, undefined);
+});
+
+test('v1 snapshots (c1/c2 headers and row fields) migrate to cols/cells', () => {
+  const v1 = {
+    v: 1,
+    nextId: 7,
+    headers: { c1: 'Animal', c2: 'Color' },
+    files: [],
+    dets: [],
+    rows: [{
+      id: 'r1', c1: 'Fox', c2: 'red', lat: 1, lon: 2,
+      latRaw: null, lonRaw: null, src: null,
+    }],
+  };
+  const restored = unpackState(v1);
+  assert.deepEqual(restored.cols, ['Animal', 'Color']);
+  assert.equal(restored.notesOn, false);
+  assert.deepEqual(restored.rows[0].cells, ['Fox', 'red']);
+  assert.equal(restored.rows[0].notes, '');
 });
 
 test('unpackState rejects garbage and fills defaults', () => {
@@ -96,7 +118,8 @@ test('unpackState rejects garbage and fills defaults', () => {
   assert.equal(minimal.zoom, 1.4);
   assert.equal(minimal.intensity, 3);
   assert.equal(minimal.nextId, 1);
-  assert.deepEqual(minimal.headers, { c1: 'Field 1', c2: 'Field 2' });
+  assert.deepEqual(minimal.cols, ['Field 1', 'Field 2']);
+  assert.equal(minimal.notesOn, false);
   assert.deepEqual(minimal.rows, []);
   assert.equal(minimal.dets.size, 0);
   assert.equal(minimal.suppressed.size, 0);

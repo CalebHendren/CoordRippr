@@ -184,32 +184,47 @@ export function parseResultsJson(text) {
 
 const VERDICTS = ['ok', 'mismatch', 'not_found'];
 
-export function normalizeResult(r) {
+/**
+ * @param {object} r        raw result object from the model
+ * @param {number} colCount how many data columns ("col1"…"colN") to read
+ */
+export function normalizeResult(r, colCount = 2) {
+  const cols = [];
+  for (let i = 1; i <= colCount; i++) {
+    const v = r[`col${i}`];
+    cols.push(typeof v === 'string' ? v.trim() : '');
+  }
   const out = {
     row: typeof r.row === 'string' || typeof r.row === 'number' ? String(r.row) : null,
     verdict: VERDICTS.includes(r.verdict) ? r.verdict : null,
     lat: typeof r.lat === 'number' && Math.abs(r.lat) <= 90 ? r.lat : null,
     lon: typeof r.lon === 'number' && Math.abs(r.lon) <= 180 ? r.lon : null,
-    col1: typeof r.col1 === 'string' ? r.col1.trim() : '',
-    col2: typeof r.col2 === 'string' ? r.col2.trim() : '',
+    cols,
+    notesCol: typeof r.notes_col === 'string' ? r.notes_col.trim().slice(0, 800) : '',
     note: typeof r.note === 'string' ? r.note.trim().slice(0, 400) : '',
     // Only a literal true marks a row for deletion — anything else is "keep".
     del: r.delete === true,
+    // Only a literal true counts as "please resend with the previous page".
+    needPrev: r.need_prev === true,
   };
   return out.row ? out : null;
 }
 
 /**
  * @param {object} p
- * @param {Array} p.rows    [{id, num, c1, c2, lat, lon, file, page}]
+ * @param {Array} p.rows    [{id, num, cells, lat, lon, file, page}]
  * @param {Array} p.pages   [{file, page, text}]
- * @param {object} p.headers {c1, c2} column header names
+ * @param {Array<string>} p.cols  data column header names (col1…colN)
  * @param {string} p.extra  user's additional instructions
  * @param {boolean} p.verify
  * @param {boolean} p.fill
  * @param {boolean} p.flagDelete  ask the model to flag false-positive rows
+ * @param {boolean} p.notes      fill the extra Notes column ("notes_col")
+ * @param {string}  p.notesSpec  what the user wants the notes to contain
+ * @param {boolean} p.allowPrev  model may request the preceding page via "need_prev"
  */
-export function buildPrompt({ rows, pages, headers, extra, verify, fill, flagDelete }) {
+export function buildPrompt({ rows, pages, cols, extra, verify, fill, flagDelete, notes, notesSpec, allowPrev }) {
+  const colKeys = cols.map((_, i) => `"col${i + 1}"`);
   const tasks = [];
   if (verify) {
     tasks.push(
@@ -220,11 +235,24 @@ export function buildPrompt({ rows, pages, headers, extra, verify, fill, flagDel
     );
   }
   if (fill) {
+    const naming = cols.map((name, i) => `column ${i + 1} is named "${name}"`).join(', ');
     tasks.push(
-      `- FILL "col1" and "col2" for each row using information in the document text near that row's coordinates. ` +
-        `Column 1 is named "${headers.c1}" and column 2 is named "${headers.c2}" — fill them with the values those names imply. ` +
+      `- FILL ${colKeys.join(', ')} for each row using information in the document text near that row's coordinates. ` +
+        `${naming.charAt(0).toUpperCase()}${naming.slice(1)} — fill each with the value its name implies. ` +
         `If the names are generic, use the most useful identifying label from the text (site/sample/species/place name) for col1 ` +
-        `and a second distinguishing attribute for col2. Keep values short. Use "" when the text offers nothing.`
+        `and further distinguishing attributes for the rest. Keep values short. Use "" when the text offers nothing.` +
+        (allowPrev
+          ? ` If the information a column needs is not in the text provided but likely sits on the page just before ` +
+            `(e.g. a table or list that started earlier), set "need_prev": true on that row and leave the unknown ` +
+            `columns "" — the row will be resent to you with the preceding page included.`
+          : '')
+    );
+  }
+  if (notes) {
+    tasks.push(
+      `- NOTES: fill "notes_col" for each row (this is a separate user-facing Notes column, not your "note" reasoning). ` +
+        `The user wants the notes to contain: ${(notesSpec || '').trim() || 'a short, useful observation about this row drawn from the document text'}. ` +
+        `Keep each note short and grounded in the text. Use "" when there is nothing relevant.`
     );
   }
   if (flagDelete) {
@@ -243,7 +271,10 @@ export function buildPrompt({ rows, pages, headers, extra, verify, fill, flagDel
     `Respond with ONLY a JSON array, no prose, one object per row:\n` +
     `[{"row": "<row id exactly as given>", "verdict": "ok"|"mismatch"|"not_found", ` +
     `"lat": <decimal degrees or null>, "lon": <decimal degrees or null>, ` +
-    `"col1": "<string>", "col2": "<string>"${flagDelete ? ', "delete": true|false' : ''}, ` +
+    `${colKeys.map((k) => `${k}: "<string>"`).join(', ')}` +
+    `${notes ? ', "notes_col": "<string>"' : ''}` +
+    `${flagDelete ? ', "delete": true|false' : ''}` +
+    `${allowPrev ? ', "need_prev": true|false' : ''}, ` +
     `"note": "<one short sentence of reasoning>"}]\n\n` +
     `Include every row you were given exactly once. Never invent coordinates that are not grounded in the text.`;
 
@@ -251,10 +282,11 @@ export function buildPrompt({ rows, pages, headers, extra, verify, fill, flagDel
   if (extra && extra.trim()) {
     lines.push(`Additional instructions from the user:\n${extra.trim()}\n`);
   }
-  lines.push(`CSV rows (id | row # | ${headers.c1} | ${headers.c2} | latitude | longitude | source):`);
+  lines.push(`CSV rows (id | row # | ${cols.join(' | ')} | latitude | longitude | source):`);
   for (const r of rows) {
+    const cells = cols.map((_, i) => (r.cells && r.cells[i]) || '');
     lines.push(
-      `${r.id} | ${r.num} | ${r.c1 || ''} | ${r.c2 || ''} | ${r.lat ?? ''} | ${r.lon ?? ''} | ${r.file} p.${r.page}`
+      `${r.id} | ${r.num} | ${cells.join(' | ')} | ${r.lat ?? ''} | ${r.lon ?? ''} | ${r.file} p.${r.page}`
     );
   }
   lines.push('');
@@ -313,4 +345,31 @@ export function chunkWork(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
   close();
   // Drop chunks that carry no rows — nothing to verify or fill there.
   return chunks.filter((c) => c.rows.length > 0);
+}
+
+/**
+ * Strict per-page batching: each page's rows go out with ONLY that page's
+ * text, one request per page (split further only when a single page exceeds
+ * the row cap). Pages without rows are skipped entirely.
+ *
+ * @param {Array} pages [{file, page, text}]
+ * @param {Array} rows  [{id, page, ...}] rows referencing those pages
+ * @returns {Array<{pages: Array, rows: Array}>}
+ */
+export function chunkPerPage(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
+  const rowsByPage = new Map();
+  for (const r of rows) {
+    if (!rowsByPage.has(r.page)) rowsByPage.set(r.page, []);
+    rowsByPage.get(r.page).push(r);
+  }
+  const chunks = [];
+  for (const page of pages) {
+    const pageRows = rowsByPage.get(page.page) || [];
+    if (pageRows.length === 0) continue;
+    const text = page.text.length > budget ? page.text.slice(0, budget) + '\n[…page text truncated…]' : page.text;
+    for (let i = 0; i < pageRows.length; i += MAX_ROWS_PER_CHUNK) {
+      chunks.push({ pages: [{ ...page, text }], rows: pageRows.slice(i, i + MAX_ROWS_PER_CHUNK) });
+    }
+  }
+  return chunks;
 }
