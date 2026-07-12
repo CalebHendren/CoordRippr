@@ -1203,6 +1203,10 @@ function initLlmDialog() {
   if (prefs.provider && PROVIDERS[prefs.provider]) sel.value = prefs.provider;
   const scopeRadio = document.querySelector(`input[name="llm-scope"][value="${prefs.scope}"]`);
   if (scopeRadio) scopeRadio.checked = true;
+  const sendModeRadio = document.querySelector(`input[name="llm-sendmode"][value="${prefs.sendMode}"]`);
+  if (sendModeRadio) sendModeRadio.checked = true;
+  $('#llm-files-all').addEventListener('click', () => setAllLlmFiles(true));
+  $('#llm-files-none').addEventListener('click', () => setAllLlmFiles(false));
   if (prefs.extra) $('#llm-extra').value = prefs.extra;
   if (prefs.verify != null) $('#llm-verify').checked = prefs.verify;
   if (prefs.fill != null) $('#llm-fill').checked = prefs.fill;
@@ -1242,6 +1246,59 @@ function syncNotesState() {
   $('#llm-notes-spec').disabled = !$('#llm-notes').checked;
 }
 
+// Rebuild the LLM dialog's PDF checkbox list. Choices made earlier in the
+// session are kept; files seen for the first time default to checked (all
+// PDFs are sent unless the user opts out). Files without rows can't be sent.
+function renderLlmFileList() {
+  const box = $('#llm-files');
+  const prev = new Map();
+  for (const cb of box.querySelectorAll('input[type="checkbox"]')) {
+    prev.set(cb.dataset.file, cb.checked);
+  }
+  box.innerHTML = '';
+  const files = state.files.filter((f) => !f.error);
+  if (files.length === 0) {
+    box.innerHTML = '<span class="muted">No PDFs loaded.</span>';
+    return;
+  }
+  const counts = new Map(); // fileId -> {rows, sent}
+  for (const r of state.rows) {
+    if (!r.src) continue;
+    const c = counts.get(r.src.fileId) || { rows: 0, sent: 0 };
+    c.rows++;
+    if (r.llmSent) c.sent++;
+    counts.set(r.src.fileId, c);
+  }
+  for (const f of files) {
+    const c = counts.get(f.id) || { rows: 0, sent: 0 };
+    const label = document.createElement('label');
+    label.className = 'llm-file';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.file = f.id;
+    cb.disabled = c.rows === 0;
+    cb.checked = c.rows > 0 && (prev.get(f.id) ?? true);
+    const name = document.createElement('span');
+    name.className = 'fname';
+    name.textContent = f.name;
+    const meta = document.createElement('span');
+    meta.className = 'fmeta';
+    meta.textContent =
+      c.rows === 0 ? 'no rows' :
+      c.sent === 0 ? `${c.rows} row${c.rows === 1 ? '' : 's'}` :
+      c.sent === c.rows ? `${c.rows} row${c.rows === 1 ? '' : 's'} · all sent to LLM` :
+      `${c.rows} rows · ${c.sent} already sent`;
+    label.append(cb, name, meta);
+    box.appendChild(label);
+  }
+}
+
+function setAllLlmFiles(on) {
+  for (const cb of document.querySelectorAll('#llm-files input[type="checkbox"]')) {
+    if (!cb.disabled) cb.checked = on;
+  }
+}
+
 function collectLlmSettings() {
   const id = $('#llm-provider').value;
   const s = {
@@ -1251,6 +1308,14 @@ function collectLlmSettings() {
     url: $('#llm-url').value.trim(),
     key: $('#llm-key').value.trim(),
     scope: document.querySelector('input[name="llm-scope"]:checked').value,
+    // Only rows never answered by an LLM go out (resend-all is the default).
+    unsentOnly: document.querySelector('input[name="llm-sendmode"]:checked').value === 'unsent',
+    // File ids the user ticked in the "PDFs to send" list.
+    files: new Set(
+      [...document.querySelectorAll('#llm-files input[type="checkbox"]')]
+        .filter((cb) => cb.checked)
+        .map((cb) => cb.dataset.file)
+    ),
     perPage: $('#llm-perpage').checked,
     extra: $('#llm-extra').value,
     verify: $('#llm-verify').checked,
@@ -1267,6 +1332,7 @@ function collectLlmSettings() {
   prefs.urls[id] = s.url;
   prefs.keys[id] = s.key;
   prefs.scope = s.scope;
+  prefs.sendMode = s.unsentOnly ? 'unsent' : 'all';
   prefs.perPage = s.perPage;
   prefs.extra = s.extra;
   prefs.verify = s.verify;
@@ -1279,14 +1345,18 @@ function collectLlmSettings() {
   return s;
 }
 
-// Rows grouped per file, with the page numbers to send along.
-function buildLlmWork(scope) {
+// Rows grouped per file, with the page numbers to send along. Only files the
+// user ticked are included; with unsentOnly, rows an LLM already answered are
+// skipped (and counted, for the status line).
+function buildLlmWork({ scope, files, unsentOnly }) {
   const work = [];
+  let skippedSent = 0;
   for (const file of state.files) {
-    if (file.error) continue;
+    if (file.error || !files.has(file.id)) continue;
     const rows = [];
     state.rows.forEach((r, i) => {
       if (r.src && r.src.fileId === file.id) {
+        if (unsentOnly && r.llmSent) { skippedSent++; return; }
         rows.push({
           id: r.id, num: i + 1, cells: [...(r.cells || [])],
           lat: r.lat != null ? Number(r.lat.toFixed(6)) : null,
@@ -1301,7 +1371,7 @@ function buildLlmWork(scope) {
       .map((p) => p.num);
     work.push({ file, rows, pageNums });
   }
-  return work;
+  return { work, skippedSent };
 }
 
 async function pageTextFor(file, pageNum) {
@@ -1351,6 +1421,7 @@ function applyLlmResults(results, s, counts, meta) {
 
 $('#btn-llm').addEventListener('click', () => {
   llmStatus('');
+  renderLlmFileList();
   llmDialog.showModal();
 });
 
@@ -1373,8 +1444,17 @@ $('#llm-run').addEventListener('click', async () => {
     );
     if (!sure) return llmStatus('Cancelled — automatic deletion not confirmed.');
   }
-  const work = buildLlmWork(s.scope);
-  if (work.length === 0) return llmStatus('No rows with a PDF source to process — scan some PDFs first. (Manually added rows are skipped.)');
+  if (s.files.size === 0) {
+    return llmStatus(state.files.some((f) => !f.error)
+      ? 'Select at least one PDF to send.'
+      : 'No rows with a PDF source to process — scan some PDFs first. (Manually added rows are skipped.)');
+  }
+  const { work, skippedSent } = buildLlmWork(s);
+  if (work.length === 0) {
+    return llmStatus(skippedSent
+      ? `Nothing to do — all ${skippedSent} row${skippedSent === 1 ? ' was' : 's were'} already sent to an LLM. Pick “All rows” to resend.`
+      : 'No rows with a PDF source in the selected PDFs — scan some PDFs first. (Manually added rows are skipped.)');
+  }
 
   llmRunning = true;
   llmAbort = false;
@@ -1442,6 +1522,16 @@ $('#llm-run').addEventListener('click', async () => {
     else renderTable();
   };
 
+  // Rows count as "sent" once an LLM reply for their chunk parsed — failed
+  // requests leave their rows unsent, so an "only unsent" re-run retries them.
+  const markSent = (chunkRows) => {
+    const now = Date.now();
+    for (const cr of chunkRows) {
+      const row = state.rows.find((r) => r.id === cr.id);
+      if (row) row.llmSent = now;
+    }
+  };
+
   // rowId -> earliest page to include on the next previous-page pass.
   const needPrev = new Map();
   const collectPrevRequests = (results, backTo) => {
@@ -1469,6 +1559,7 @@ $('#llm-run').addEventListener('click', async () => {
       llmStatus(`Request ${n + 1}/${chunks.length} — ${chunk.rows.length} row${chunk.rows.length === 1 ? '' : 's'} from ${where}…`);
       const results = await sendChunk(chunk, `Request ${n + 1}`, allowPrev);
       if (!results) continue;
+      markSent(chunk.rows);
       applyAndRender(results);
       if (allowPrev) {
         for (const res of results) {
@@ -1522,6 +1613,7 @@ $('#llm-run').addEventListener('click', async () => {
   if (s.fill) parts.push(`${counts.filled} cell${counts.filled === 1 ? '' : 's'} filled`);
   if (s.notes) parts.push(`${counts.noted} note${counts.noted === 1 ? '' : 's'} written`);
   if (prevRows.size) parts.push(`${prevRows.size} row${prevRows.size === 1 ? '' : 's'} re-sent with earlier pages`);
+  if (s.unsentOnly && skippedSent) parts.push(`${skippedSent} already-sent row${skippedSent === 1 ? '' : 's'} skipped`);
   if (s.flagDelete) {
     parts.push(s.autoDelete
       ? `${counts.deleted} row${counts.deleted === 1 ? '' : 's'} auto-deleted`
@@ -1535,6 +1627,7 @@ $('#llm-run').addEventListener('click', async () => {
   if (counts.errors.length) msg += `\nProblems:\n• ${counts.errors.slice(0, 5).join('\n• ')}`;
   msg += '\n⚠️ LLM output is not ground truth — verify it against the PDFs yourself.';
   llmStatus(msg);
+  renderLlmFileList(); // sent counts changed
   refreshCounts();
   persistSoon();
 });
