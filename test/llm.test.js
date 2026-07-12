@@ -102,6 +102,13 @@ test('normalizeResult validates fields', () => {
   assert.equal(normalizeResult({ row: 'r1', lat: 999 }).lat, null); // out of range
 });
 
+test('normalizeResult only honours a literal delete: true', () => {
+  assert.equal(normalizeResult({ row: 'r1', delete: true }).del, true);
+  assert.equal(normalizeResult({ row: 'r1', delete: false }).del, false);
+  assert.equal(normalizeResult({ row: 'r1', delete: 'yes' }).del, false);
+  assert.equal(normalizeResult({ row: 'r1' }).del, false);
+});
+
 test('buildPrompt includes rows, headers and page markers', () => {
   const { system, user } = buildPrompt({
     rows: [{ id: 'r1', num: 1, c1: '', c2: '', lat: 41.4, lon: 2.17, file: 'a.pdf', page: 3 }],
@@ -125,6 +132,18 @@ test('buildPrompt omits task text when disabled', () => {
   });
   assert.match(system, /VERIFY/);
   assert.doesNotMatch(system, /FILL/);
+  assert.doesNotMatch(system, /FLAG/);
+  assert.doesNotMatch(system, /"delete"/);
+});
+
+test('buildPrompt adds the FLAG task and delete field when requested', () => {
+  const { system } = buildPrompt({
+    rows: [], pages: [], headers: { c1: 'A', c2: 'B' }, extra: '',
+    verify: false, fill: false, flagDelete: true,
+  });
+  assert.match(system, /FLAG false positives/);
+  assert.match(system, /"delete": true\|false/);
+  assert.match(system, /when in doubt, keep it/);
 });
 
 test('chunkWork splits by budget and keeps rows with their pages', () => {

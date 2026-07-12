@@ -11,6 +11,14 @@ If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-
 
 ## Features
 
+- **Projects** — keep several jobs going at once. Each project has its own
+  PDFs, rows, column headers and settings; switch between them from the
+  toolbar (`＋` new, `✎` rename, `🗑` delete). Everything is saved per project.
+- **Resume where you left off** — CoordRippr snapshots your session (files,
+  extracted rows, edits, format, zoom, deletions) to local storage as you
+  work, so closing and reopening the app drops you back exactly where you
+  were — dropped-in PDFs and all. (Uses IndexedDB; if a browser blocks it,
+  the app still runs, just without saving.)
 - **Batch scanning** — open a folder and every PDF in it (recursively) is scanned.
   Individual file picking and drag & drop work too.
 - **Extremely wide detection net** — DD (`41.40338, 2.17403`) and DMS
@@ -19,7 +27,15 @@ If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-
   - any tick mark for minutes/seconds: `'` `′` `’` `` ` `` `´`, `"` `″` `”`, doubled ticks
   - hemisphere as letters (`N`, `s`) or words (`South`, `West`), leading or trailing
   - `Lat.` / `Long.` labels, space-separated DMS (`40 26 46 N`), decimal commas
-  - coordinates broken across **line breaks**
+  - coordinates broken across **line breaks** — even when a pair straddles a
+    **page boundary** (latitude at the foot of one page, longitude at the top
+    of the next)
+- **Dynamic detection net (regex intensity)** — a toolbar slider from
+  *Strict* to *Everything* controls how aggressive the parser is. Turn it down
+  when a document is full of numbers that look like coordinates but aren't;
+  turn it up to catch bare decimal or even integer pairs. Moving the slider
+  re-scans the loaded PDFs in place — your edits, filled columns and deletions
+  are preserved.
 - **Focused page view** — only pages containing detections are shown
   (toggle *Show all pages* to see everything). Every hit is highlighted.
 - **Two-way jumping** — click a CSV row to jump to the highlight in the PDF;
@@ -47,6 +63,13 @@ If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-
   - Choose to send only the pages with detected coordinates, or the full PDFs.
   - Rows get a verdict badge: ✓ confirmed, ⚠ mismatch (click to apply the
     suggested correction), ? not found.
+  - **False-positive flagging** — optionally let the LLM mark rows that
+    aren't really coordinates (dates, measurements, page numbers…). They get a
+    🗑 flag you can review and remove one-by-one or with *Delete Flagged*.
+    There's also an explicit, opt-in **automatic deletion** mode that removes
+    flagged rows with no confirmation — powerful but **dangerous**, because a
+    wrong flag silently discards a real coordinate. It resets every run and
+    asks you to confirm before starting.
   - ⚠️ **Use at your own risk.** LLMs make mistakes and invent details.
     Nothing it returns is ground truth — always verify against the PDFs.
 - **Daily update check** (plus a *Check for updates* button in the footer) —
@@ -68,8 +91,10 @@ Grab the latest build from the [Releases](../../releases) page:
 | Fedora / RHEL | `CoordRippr-<version>-linux-x86_64.rpm` |
 | Arch | `CoordRippr-<version>-linux-x64.pacman` |
 
-Builds are produced by the [GitHub Actions workflow](.github/workflows/build.yml);
-pushing a `v*` tag creates a release with all installers attached.
+Builds are produced by the [GitHub Actions workflow](.github/workflows/build.yml).
+A release with all installers attached is created automatically whenever the
+`version` in `package.json` is bumped and merged to `main` (the workflow tags
+`v<version>` and publishes it once). Pushing a `v*` tag by hand still works too.
 
 ### Web version (GitHub Pages)
 
@@ -91,9 +116,12 @@ to "GitHub Actions"). Web-version caveats:
 ## Usage
 
 1. **Open Folder…** (or *Open PDFs…* / drag files in). Scanning starts
-   immediately; the file list shows a hit count per PDF.
+   immediately; the file list shows a hit count per PDF. Working on more than
+   one job? Spin up a separate **Project** for each — they're kept apart and
+   saved automatically, and you'll land back in the last one next launch.
 2. Review the right panel: only pages with detections are shown, hits are
-   highlighted yellow. Hover a highlight to see the raw matched text.
+   highlighted yellow. Hover a highlight to see the raw matched text. If the
+   parser is too greedy or too shy, drag the **Net** slider and it re-scans.
 3. Fill in columns 1–2 (site names, notes, …). For repeated values use the
    *Fill* bar: pick the column, a row range, a value → *Apply*.
 4. Pick the coordinate output format in the toolbar (DD / DMS / Both).
@@ -119,7 +147,10 @@ npm run dist       # package for the current platform
 
 Useful bits:
 
-- `src/coords.js` — the tokenizer/parser/formatter. Start here to widen the net further.
+- `src/coords.js` — the tokenizer/parser/formatter, the intensity levels, and
+  `extractCrossPage()`. Start here to widen the net further.
+- `src/persist.js` — IndexedDB-backed projects and session snapshots
+  (`packState`/`unpackState` are pure and unit-tested).
 - `src/pdftext.js` — pdf.js text items → searchable string + match-to-rectangle mapping.
 - `tools/make-sample-pdf.mjs` — regenerates `test/fixtures/sample.pdf` (the messy two-column test document).
 - `build/icon.svg` — icon source; rasterize with:
