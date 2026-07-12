@@ -137,6 +137,21 @@
           <input id="llm-url" type="text" spellcheck="false" />
         </label>
 
+        <fieldset class="wide" id="llm-files-fs">
+          <legend>PDFs to send</legend>
+          <div id="llm-files"></div>
+          <div class="llm-files-tools">
+            <button type="button" id="llm-files-all" class="linkish">Select all</button>
+            <button type="button" id="llm-files-none" class="linkish">Select none</button>
+          </div>
+        </fieldset>
+
+        <fieldset class="wide">
+          <legend>Rows to send</legend>
+          <label title="Send every row of the selected PDFs, even rows an LLM has already checked — use this to re-run with another model or task."><input type="radio" name="llm-sendmode" value="all" checked /> All rows (resend rows already checked by an LLM)</label>
+          <label title="Rows count as sent once an LLM reply for them arrives; rows from failed requests stay unsent."><input type="radio" name="llm-sendmode" value="unsent" /> Only rows not yet sent to an LLM</label>
+        </fieldset>
+
         <fieldset class="wide">
           <legend>PDF text to send</legend>
           <label><input type="radio" name="llm-scope" value="coords" checked /> Only pages with detected coordinates</label>

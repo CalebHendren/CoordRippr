@@ -26,6 +26,7 @@ function sampleState() {
         latRaw: null, lonRaw: 'garbage',
         src: { fileId: 'f1', pageNum: 2, latDet: 'd1', lonDet: null },
         llm: { verdict: 'ok', note: 'looks right' },
+        llmSent: 1730000000000,
       },
       { id: 'r2', cells: ['', '', ''], notes: '', lat: null, lon: null, latRaw: null, lonRaw: null, src: null },
     ],
@@ -84,9 +85,11 @@ test('pack → unpack round trip preserves the session', () => {
   assert.equal(restored.rows[0].notes, 'seen at dusk');
   assert.equal(restored.rows[0].lonRaw, 'garbage');
   assert.equal(restored.rows[0].llm.verdict, 'ok');
+  assert.equal(restored.rows[0].llmSent, 1730000000000);
   assert.equal(restored.rows[0].src.latDet, 'd1');
   assert.equal(restored.rows[1].src, null);
   assert.equal(restored.rows[1].llm, undefined);
+  assert.equal(restored.rows[1].llmSent, undefined); // never sent stays unmarked
 });
 
 test('v1 snapshots (c1/c2 headers and row fields) migrate to cols/cells', () => {
