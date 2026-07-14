@@ -1184,14 +1184,50 @@ function llmPrefs() {
 
 function llmStatus(msg) { $('#llm-status').textContent = msg; }
 
+// Sentinel <option> value that means "let me type my own model ID".
+const CUSTOM_MODEL_OPT = '__custom__';
+
 function syncLlmProviderFields() {
   const prefs = llmPrefs();
   const id = $('#llm-provider').value;
   const p = PROVIDERS[id];
-  $('#llm-model').value = prefs.models[id] ?? p.model;
+  const model = prefs.models[id] ?? p.model;
+  $('#llm-model').value = model;
+  populateModelSelect(p, model);
   $('#llm-url').value = prefs.urls[id] ?? p.url;
   $('#llm-key').value = prefs.keys[id] ?? '';
   $('#llm-key').placeholder = p.keyHint || '';
+}
+
+// Fill the model dropdown from the provider's preset list plus a "Custom…"
+// entry. Selects the current model if it's a known preset, otherwise falls
+// back to Custom and reveals the free-text field (which holds the actual value).
+function populateModelSelect(p, model) {
+  const sel = $('#llm-model-select');
+  const models = p.models || [];
+  const known = models.includes(model);
+  sel.innerHTML =
+    models.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('') +
+    `<option value="${CUSTOM_MODEL_OPT}">Custom…</option>`;
+  sel.value = known ? model : CUSTOM_MODEL_OPT;
+  syncModelCustomState();
+}
+
+// The free-text model field is only shown when "Custom…" is picked; otherwise
+// the dropdown alone drives the model value.
+function syncModelCustomState() {
+  $('#llm-model').hidden = $('#llm-model-select').value !== CUSTOM_MODEL_OPT;
+}
+
+function onModelSelectChange() {
+  const sel = $('#llm-model-select');
+  const input = $('#llm-model');
+  if (sel.value !== CUSTOM_MODEL_OPT) input.value = sel.value;
+  syncModelCustomState();
+  if (sel.value === CUSTOM_MODEL_OPT) {
+    input.focus();
+    input.select();
+  }
 }
 
 function initLlmDialog() {
@@ -1227,6 +1263,7 @@ function initLlmDialog() {
   $('#llm-notes').addEventListener('change', syncNotesState);
   syncLlmProviderFields();
   sel.addEventListener('change', syncLlmProviderFields);
+  $('#llm-model-select').addEventListener('change', onModelSelectChange);
 }
 
 function syncAutoDelState() {

@@ -9,33 +9,43 @@
 // the Chinese providers, expose).
 // ---------------------------------------------------------------------------
 
+// Each provider ships a short curated list of current model IDs for the model
+// dropdown. `model` is the default (must be one of `models`); users can always
+// pick "Custom…" and type any other ID. Model names were verified current as of
+// July 2026 — refresh these when providers rotate their line-ups (several older
+// defaults, e.g. DeepSeek's deepseek-chat, Gemini's gemini-2.0-flash, Kimi's
+// kimi-latest and GLM's glm-4-flash, have since been retired or deprecated).
 export const PROVIDERS = {
   anthropic: {
     label: 'Anthropic (Claude)',
     kind: 'anthropic',
     url: 'https://api.anthropic.com/v1/messages',
     model: 'claude-opus-4-8',
+    models: ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-fable-5'],
     keyHint: 'sk-ant-…',
   },
   openai: {
     label: 'OpenAI (GPT)',
     kind: 'openai',
     url: 'https://api.openai.com/v1/chat/completions',
-    model: 'gpt-4o-mini',
+    model: 'gpt-5.1',
+    models: ['gpt-5.1', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1'],
     keyHint: 'sk-…',
   },
   gemini: {
     label: 'Google (Gemini)',
     kind: 'openai',
     url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
+    models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.5-flash', 'gemini-flash-latest'],
     keyHint: 'AIza…',
   },
   deepseek: {
     label: 'DeepSeek',
     kind: 'openai',
     url: 'https://api.deepseek.com/chat/completions',
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-flash',
+    models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
     keyHint: 'sk-…',
   },
   qwen: {
@@ -43,20 +53,23 @@ export const PROVIDERS = {
     kind: 'openai',
     url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
     model: 'qwen-plus',
+    models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen3-max'],
     keyHint: 'sk-…',
   },
   kimi: {
     label: 'Kimi (Moonshot)',
     kind: 'openai',
     url: 'https://api.moonshot.cn/v1/chat/completions',
-    model: 'kimi-latest',
+    model: 'kimi-k2.6',
+    models: ['kimi-k2.6', 'kimi-k2.5', 'kimi-k2.7-code', 'moonshot-v1-128k', 'moonshot-v1-32k'],
     keyHint: 'sk-…',
   },
   zhipu: {
     label: 'GLM (Zhipu / BigModel)',
     kind: 'openai',
     url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
-    model: 'glm-4-flash',
+    model: 'glm-4.6',
+    models: ['glm-4.6', 'glm-4.7', 'glm-4.5', 'glm-4.5-air', 'glm-4-flash'],
     keyHint: '…',
   },
   custom: {
@@ -64,6 +77,7 @@ export const PROVIDERS = {
     kind: 'openai',
     url: '',
     model: '',
+    models: [],
     keyHint: 'optional for local endpoints',
   },
 };
