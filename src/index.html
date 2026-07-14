@@ -128,7 +128,8 @@
           <select id="llm-provider"></select>
         </label>
         <label>Model
-          <input id="llm-model" type="text" spellcheck="false" />
+          <select id="llm-model-select"></select>
+          <input id="llm-model" type="text" spellcheck="false" placeholder="Type a model ID" hidden />
         </label>
         <label class="wide">API key <span class="muted">(stored unencrypted in this app's local data; sent only to the provider)</span>
           <input id="llm-key" type="password" spellcheck="false" autocomplete="off" />
