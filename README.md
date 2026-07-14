@@ -62,6 +62,9 @@ If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-
     Qwen (Alibaba), Kimi (Moonshot), GLM (Zhipu), or any custom
     OpenAI-compatible endpoint. Your key is stored locally and sent only to
     the provider you pick.
+  - Each provider has a **model dropdown** pre-filled with current models
+    (e.g. Claude → Haiku, Sonnet, Opus, Fable), plus a **Custom…** option to
+    type any other model ID.
   - Choose to send only the pages with detected coordinates, or the full PDFs.
   - Rows get a verdict badge: ✓ confirmed, ⚠ mismatch (click to apply the
     suggested correction), ? not found.
