@@ -178,7 +178,7 @@
         </fieldset>
 
         <label class="wide">Add to the prompt <span class="muted">(what columns 1–2 mean, what to look for, …)</span>
-          <textarea id="llm-extra" rows="3" placeholder="e.g. Column 1 = animal name, Column 2 = the animal's colour as described in the text"></textarea>
+          <textarea id="llm-extra" rows="3" placeholder="e.g. Extract the genus and species for each coordinate from the document text">Extract the genus and species of the organism described near each coordinate from the document text. Put the genus in the Genus column (col1) and the species in the Species column (col2). If a name is abbreviated (e.g. "P. leo"), expand the genus from where the full name appears elsewhere in the text.</textarea>
         </label>
       </div>
 
