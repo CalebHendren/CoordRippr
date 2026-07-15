@@ -375,8 +375,3 @@ export function formatDMS(dd, axis) {
   const secStr = sec.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
   return `${deg}°${String(min).padStart(2, '0')}'${secStr.padStart(2, '0')}"${hemi}`;
 }
-
-/** Format for a given output mode. */
-export function formatCoord(dd, axis, mode) {
-  return mode === 'dms' ? formatDMS(dd, axis) : formatDD(dd);
-}
