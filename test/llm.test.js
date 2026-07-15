@@ -185,13 +185,22 @@ test('buildPrompt adds the FLAG task and delete field when requested', () => {
   assert.match(system, /when in doubt, keep it/);
 });
 
-test('buildPrompt offers need_prev only when fill and allowPrev are on', () => {
+test('buildPrompt offers need_prev whenever allowPrev is on (independent of fill)', () => {
   const on = buildPrompt({
     rows: [], pages: [], cols: ['A', 'B'], extra: '',
     verify: false, fill: true, allowPrev: true,
   });
   assert.match(on.system, /"need_prev": true\|false/);
   assert.match(on.system, /preceding page/);
+  // Page flips are available even when FILL is off — e.g. driven only by the
+  // user's "Add to the prompt" instructions.
+  const fillOff = buildPrompt({
+    rows: [], pages: [], cols: ['A', 'B'], extra: 'Extract the genus and species.',
+    verify: false, fill: false, allowPrev: true,
+  });
+  assert.match(fillOff.system, /"need_prev": true\|false/);
+  assert.match(fillOff.system, /preceding page/);
+  assert.match(fillOff.system, /added instructions/);
   const off = buildPrompt({
     rows: [], pages: [], cols: ['A', 'B'], extra: '',
     verify: false, fill: true, allowPrev: false,
@@ -199,13 +208,20 @@ test('buildPrompt offers need_prev only when fill and allowPrev are on', () => {
   assert.doesNotMatch(off.system, /"need_prev"/);
 });
 
-test('buildPrompt offers need_next only when fill and allowNext are on', () => {
+test('buildPrompt offers need_next whenever allowNext is on (independent of fill)', () => {
   const on = buildPrompt({
     rows: [], pages: [], cols: ['A', 'B'], extra: '',
     verify: false, fill: true, allowNext: true,
   });
   assert.match(on.system, /"need_next": true\|false/);
   assert.match(on.system, /following page/);
+  // Available with FILL off too (extra-instruction driven).
+  const fillOff = buildPrompt({
+    rows: [], pages: [], cols: ['A', 'B'], extra: 'Extract the genus and species.',
+    verify: false, fill: false, allowNext: true,
+  });
+  assert.match(fillOff.system, /"need_next": true\|false/);
+  assert.match(fillOff.system, /following page/);
   const off = buildPrompt({
     rows: [], pages: [], cols: ['A', 'B'], extra: '',
     verify: false, fill: true, allowNext: false,
