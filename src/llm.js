@@ -257,17 +257,26 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, flagDelete
       `- FILL ${colKeys.join(', ')} for each row using information in the document text near that row's coordinates. ` +
         `${naming.charAt(0).toUpperCase()}${naming.slice(1)} — fill each with the value its name implies. ` +
         `If the names are generic, use the most useful identifying label from the text (site/sample/species/place name) for col1 ` +
-        `and further distinguishing attributes for the rest. Keep values short. Use "" when the text offers nothing.` +
-        (allowPrev
-          ? ` If the information a column needs is not in the text provided but likely sits on the page just before ` +
-            `(e.g. a table or list that started earlier), set "need_prev": true on that row and leave the unknown ` +
-            `columns "" — the row will be resent to you with the preceding page included.`
-          : '') +
-        (allowNext
-          ? ` If the information a column needs is not in the text provided but likely sits on the page just after ` +
-            `(e.g. a table or list that continues onto the following page), set "need_next": true on that row and leave the unknown ` +
-            `columns "" — the row will be resent to you with the next page included.`
-          : '')
+        `and further distinguishing attributes for the rest. Keep values short. Use "" when the text offers nothing.`
+    );
+  }
+  if (allowPrev || allowNext) {
+    const flips = [];
+    if (allowPrev) {
+      flips.push(
+        `set "need_prev": true on that row and it will be resent to you with the preceding page included`
+      );
+    }
+    if (allowNext) {
+      flips.push(
+        `set "need_next": true on that row and it will be resent to you with the following page included`
+      );
+    }
+    tasks.push(
+      `- PAGE CONTEXT: when the information a row needs — a data column value, or anything the user's added instructions ` +
+        `ask for — is not in the text you were given but likely sits on an adjacent page (a table, list or passage that ` +
+        `started earlier or continues later), ${flips.join('; or ')}. Leave the still-unknown columns "" in the meantime. ` +
+        `Only request a page when the current text genuinely lacks the information.`
     );
   }
   if (notes) {

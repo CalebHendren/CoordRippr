@@ -35,7 +35,7 @@ const state = {
   files: [], // {id, name, path, doc, error, numPages, pages:[{num,w,h,proxy,dets:[]}]}
   dets: new Map(), // detId -> {id, fileId, pageNum, rects, rowId, half, raw, span}
   rows: [], // {id, cells:[…], notes, lat, lon, latRaw, lonRaw, src:{fileId,pageNum,latDet,lonDet,extraDets?}}
-  cols: ['Field 1', 'Field 2'], // data column headers (2 by default, user can add more)
+  cols: ['Genus', 'Species'], // data column headers (2 by default, user can add more)
   notesOn: false, // the LLM-filled Notes column exists only after a notes run
   fmt: 'dd', // 'dd' | 'dms' | 'both'
   showAll: false,
@@ -1508,11 +1508,14 @@ $('#llm-run').addEventListener('click', async () => {
     renderTable();
   }
 
-  // Per-page batching and previous-page requests only make sense when we're
-  // NOT already sending the whole PDF.
+  // Per-page batching and adjacent-page requests only make sense when we're
+  // NOT already sending the whole PDF. Page flips let the model pull in the
+  // page before/after a row to finish the data columns (FILL) or anything the
+  // user's "Add to the prompt" instructions ask for.
   const perPage = s.perPage && s.scope !== 'all';
-  const allowPrev = s.fill && s.scope !== 'all';
-  const allowNext = s.fill && s.scope !== 'all';
+  const hasExtra = !!(s.extra && s.extra.trim());
+  const allowPrev = (s.fill || hasExtra) && s.scope !== 'all';
+  const allowNext = (s.fill || hasExtra) && s.scope !== 'all';
   const MAX_PREV_PASSES = 3; // how far back a stubborn row may walk, one page per pass
   const MAX_NEXT_PASSES = 3; // how far forward a stubborn row may walk, one page per pass
 
@@ -1781,7 +1784,7 @@ function resetState() {
   state.files = [];
   state.dets = new Map();
   state.rows = [];
-  state.cols = ['Field 1', 'Field 2'];
+  state.cols = ['Genus', 'Species'];
   state.notesOn = false;
   state.fmt = 'dd';
   state.showAll = false;
