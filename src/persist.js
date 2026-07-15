@@ -74,13 +74,11 @@ export function unpackState(snap) {
       num: p.num, w: p.w, h: p.h, proxy: null, dets: [...(p.dets || [])],
     })),
   }));
-  // v2 stores a column-name array; v1 stored {c1, c2} headers.
   const cols = Array.isArray(snap.cols) && snap.cols.length
     ? snap.cols.map((c) => String(c ?? ''))
-    : [snap.headers?.c1 ?? 'Field 1', snap.headers?.c2 ?? 'Field 2'];
+    : ['Genus', 'Species'];
   const rows = (snap.rows || []).map((r) => {
-    // v2 rows carry a cells array; v1 rows carried c1/c2.
-    const cells = Array.isArray(r.cells) ? r.cells.map((c) => String(c ?? '')) : [r.c1 || '', r.c2 || ''];
+    const cells = Array.isArray(r.cells) ? r.cells.map((c) => String(c ?? '')) : [];
     while (cells.length < cols.length) cells.push('');
     return {
       id: r.id, cells: cells.slice(0, cols.length), notes: r.notes || '',
@@ -97,7 +95,7 @@ export function unpackState(snap) {
     notesOn: !!snap.notesOn,
     fmt: snap.fmt || 'dd',
     showAll: !!snap.showAll,
-    showHighlights: snap.showHighlights !== false, // default on (old snapshots too)
+    showHighlights: snap.showHighlights !== false, // default on when the field is absent
     zoom: typeof snap.zoom === 'number' ? snap.zoom : 1.4,
     intensity: typeof snap.intensity === 'number' ? snap.intensity : 3,
     currentFile: snap.currentFile ?? null,

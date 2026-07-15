@@ -92,36 +92,17 @@ test('pack → unpack round trip preserves the session', () => {
   assert.equal(restored.rows[1].llmSent, undefined); // never sent stays unmarked
 });
 
-test('v1 snapshots (c1/c2 headers and row fields) migrate to cols/cells', () => {
-  const v1 = {
-    v: 1,
-    nextId: 7,
-    headers: { c1: 'Animal', c2: 'Color' },
-    files: [],
-    dets: [],
-    rows: [{
-      id: 'r1', c1: 'Fox', c2: 'red', lat: 1, lon: 2,
-      latRaw: null, lonRaw: null, src: null,
-    }],
-  };
-  const restored = unpackState(v1);
-  assert.deepEqual(restored.cols, ['Animal', 'Color']);
-  assert.equal(restored.notesOn, false);
-  assert.deepEqual(restored.rows[0].cells, ['Fox', 'red']);
-  assert.equal(restored.rows[0].notes, '');
-});
-
 test('unpackState rejects garbage and fills defaults', () => {
   assert.equal(unpackState(null), null);
   assert.equal(unpackState({}), null);
   assert.equal(unpackState('nope'), null);
-  const minimal = unpackState({ v: 1, files: [] });
+  const minimal = unpackState({ v: SNAPSHOT_VERSION, files: [] });
   assert.equal(minimal.fmt, 'dd');
-  assert.equal(minimal.showHighlights, true); // pre-toggle snapshots default on
+  assert.equal(minimal.showHighlights, true); // default on when the field is absent
   assert.equal(minimal.zoom, 1.4);
   assert.equal(minimal.intensity, 3);
   assert.equal(minimal.nextId, 1);
-  assert.deepEqual(minimal.cols, ['Field 1', 'Field 2']);
+  assert.deepEqual(minimal.cols, ['Genus', 'Species']);
   assert.equal(minimal.notesOn, false);
   assert.deepEqual(minimal.rows, []);
   assert.equal(minimal.dets.size, 0);
