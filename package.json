@@ -1,7 +1,7 @@
 {
   "name": "coordrippr",
   "productName": "CoordRippr",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Extract coordinate data from PDFs into clean CSV",
   "main": "main.js",
   "type": "module",
@@ -32,6 +32,7 @@
     "appId": "com.calebhendren.coordrippr",
     "productName": "CoordRippr",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "afterPack": "build/after-pack.cjs",
     "directories": {
       "buildResources": "build",
       "output": "dist"
