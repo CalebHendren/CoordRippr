@@ -1,6 +1,6 @@
-// Build a searchable string from a pdf.js textContent object while keeping a
-// char-offset -> text-item mapping, so regex match ranges can be turned back
-// into rectangles on the page. Pure module: usable from Node for testing.
+// Build a searchable string from a pdf.js textContent, keeping a char-offset ->
+// text-item map so regex match ranges map back to page rectangles. Pure module
+// (usable from Node for testing).
 
 /**
  * @param {object} textContent result of page.getTextContent()
@@ -28,8 +28,8 @@ export function buildPageText(textContent) {
   return { text, spans };
 }
 
-// Decide what belongs between two consecutive text items: nothing (same word),
-// a space (same line), or a newline (new line / new column). PDF y grows up.
+// Divider between two consecutive items: '' (same word), ' ' (same line), or
+// '\n' (new line/column). PDF y grows up.
 function pickDivider(prev, cur) {
   const py = prev.transform[5];
   const cy = cur.transform[5];
@@ -41,9 +41,8 @@ function pickDivider(prev, cur) {
 }
 
 /**
- * Convert a character range of the built text into PDF-space rectangles
- * ([x1,y1,x2,y2], y up). One rect per touched text item, char positions
- * approximated by proportional width.
+ * Char range of the built text -> PDF-space rectangles ([x1,y1,x2,y2], y up).
+ * One rect per touched item; char positions approximated by proportional width.
  */
 export function rectsForRange(spans, start, end) {
   const rects = [];

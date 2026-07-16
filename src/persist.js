@@ -1,8 +1,6 @@
-// CoordRippr persistence: projects + session snapshots + PDF bytes, stored in
-// IndexedDB so both the Electron build and the browser build resume exactly
-// where the user left off. packState/unpackState are pure (node --test
-// covers them); the storage object is the IndexedDB glue and only touches
-// indexedDB when called.
+// CoordRippr persistence: projects + session snapshots + PDF bytes in IndexedDB,
+// so Electron and browser builds resume where the user left off.
+// packState/unpackState are pure (node --test); `storage` is the IndexedDB glue.
 
 export const SNAPSHOT_VERSION = 2;
 
@@ -11,9 +9,8 @@ export const SNAPSHOT_VERSION = 2;
 // ---------------------------------------------------------------------------
 
 /**
- * Turn the renderer's live state into a plain JSON-able snapshot. Page
- * proxies and pdf.js documents are dropped — they are reattached on restore
- * from the stored PDF bytes (or re-read from disk in Electron).
+ * Live state -> plain JSON-able snapshot. Page proxies and pdf.js docs are
+ * dropped; restore reattaches them from stored PDF bytes (or disk in Electron).
  */
 export function packState(state, nextId) {
   return {
@@ -53,9 +50,8 @@ export function packState(state, nextId) {
 }
 
 /**
- * Rebuild state fields from a snapshot. Returns null for anything that is
- * not a usable snapshot. Files come back without `doc`/page proxies; the
- * caller re-opens the PDFs and reattaches them.
+ * Snapshot -> state fields. null when the snapshot is unusable. Files come back
+ * without `doc`/page proxies; the caller re-opens the PDFs and reattaches them.
  */
 export function unpackState(snap) {
   if (!snap || typeof snap !== 'object' || !Array.isArray(snap.files)) return null;

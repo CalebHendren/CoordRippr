@@ -1,3 +1,6 @@
+// Tests for src/llm.js (providers, request/response wire formats, prompt
+// building, chunking, runPool). No need to run unless you changed llm.js.
+// Prereq: `npm install`. Run: `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -9,8 +12,13 @@ import {
   buildPrompt,
   chunkWork,
   chunkPerPage,
+  runPool,
+  DEFAULT_CONCURRENCY,
+  MAX_CONCURRENCY,
   MAX_ROWS_PER_CHUNK,
 } from '../src/llm.js';
+
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 test('anthropic request shape', () => {
   const req = buildRequest({
@@ -296,4 +304,87 @@ test('chunkPerPage truncates huge pages and splits over-full row sets', () => {
   assert.equal(chunks[0].rows.length, MAX_ROWS_PER_CHUNK);
   assert.equal(chunks[1].rows.length, 5);
   assert.ok(chunks[0].pages[0].text.includes('truncated'));
+});
+
+test('runPool returns results in item order regardless of completion order', async () => {
+  const items = [30, 5, 20, 1, 15];
+  const out = await runPool(items, 3, async (ms, i) => {
+    await tick(ms); // later items finish first
+    return `${i}:${ms}`;
+  });
+  assert.deepEqual(out, ['0:30', '1:5', '2:20', '3:1', '4:15']);
+});
+
+test('runPool never exceeds the concurrency limit', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const items = Array.from({ length: 12 }, (_, i) => i);
+  await runPool(items, 4, async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await tick(5);
+    inFlight--;
+  });
+  assert.equal(peak, 4);
+});
+
+test('runPool with limit 1 is fully sequential (old behaviour)', async () => {
+  const order = [];
+  let inFlight = 0;
+  let peak = 0;
+  await runPool([1, 2, 3], 1, async (n) => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await tick(2);
+    order.push(n);
+    inFlight--;
+  });
+  assert.equal(peak, 1);
+  assert.deepEqual(order, [1, 2, 3]);
+});
+
+test('runPool clamps a limit larger than the item count', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  await runPool([1, 2], 99, async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await tick(3);
+    inFlight--;
+  });
+  assert.equal(peak, 2); // only 2 items, so at most 2 run at once
+});
+
+test('runPool coerces a bad limit to at least one worker', async () => {
+  const seen = [];
+  await runPool([1, 2, 3], 0, async (n) => { seen.push(n); await tick(1); });
+  assert.deepEqual(seen, [1, 2, 3]);
+  const seen2 = [];
+  await runPool([1, 2], NaN, async (n) => { seen2.push(n); });
+  assert.deepEqual(seen2, [1, 2]);
+});
+
+test('runPool stops picking up new items once shouldStop() is true', async () => {
+  const started = [];
+  let stop = false;
+  const out = await runPool([1, 2, 3, 4, 5, 6], 1, async (n) => {
+    started.push(n);
+    if (n === 2) stop = true; // request a stop from inside the pool
+    await tick(1);
+    return n * 10;
+  }, () => stop);
+  // Items 1 and 2 start; after 2 sets stop, 3+ are never picked up.
+  assert.deepEqual(started, [1, 2]);
+  assert.deepEqual(out.slice(0, 2), [10, 20]);
+  assert.equal(out[2], undefined); // untouched slots stay undefined
+});
+
+test('runPool handles an empty item list', async () => {
+  const out = await runPool([], 4, async () => { throw new Error('should not run'); });
+  assert.deepEqual(out, []);
+});
+
+test('concurrency constants are sane', () => {
+  assert.ok(DEFAULT_CONCURRENCY >= 1 && DEFAULT_CONCURRENCY <= MAX_CONCURRENCY);
+  assert.ok(MAX_CONCURRENCY >= 1);
 });

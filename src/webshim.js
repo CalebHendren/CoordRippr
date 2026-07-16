@@ -1,6 +1,6 @@
-// Browser adapter for the GitHub Pages build. Provides the same window.coordrippr
-// API that the Electron preload exposes. Inside Electron the preload has already
-// defined window.coordrippr, so this whole file is a no-op there.
+// Browser adapter for the GitHub Pages build: same window.coordrippr API the
+// Electron preload exposes. In Electron the preload already defined it, so this
+// file is a no-op there.
 
 if (!window.coordrippr) {
   const MAX_FILES = 500;

@@ -161,6 +161,7 @@
           <label><input type="radio" name="llm-scope" value="coords" checked /> Only pages with detected coordinates</label>
           <label><input type="radio" name="llm-scope" value="all" /> Full PDFs (all pages)</label>
           <label title="Each page's rows go out with only that page's text — smaller, more focused requests. If the model can't fill a column from its page, the previous or next page is sent automatically. Ignored when full PDFs are sent."><input type="checkbox" id="llm-perpage" checked /> One request per page</label>
+          <label class="llm-conc" title="How many requests to send at the same time. Higher finishes faster (especially with 'One request per page', which fans a PDF out into many small requests) but is more likely to hit the provider's rate limit. 1 = one at a time.">Send <input type="number" id="llm-concurrency" min="1" max="8" step="1" value="4" /> request(s) at once</label>
         </fieldset>
 
         <fieldset class="wide">

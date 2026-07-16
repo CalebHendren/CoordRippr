@@ -1,5 +1,8 @@
-// Integration test: run the real pdf.js text extraction over the sample PDF
-// and make sure the full pipeline (pdftext + coords) finds what it should.
+// Integration test: real pdf.js text extraction over the sample PDF, checking
+// the full pipeline (src/pdftext.js + src/coords.js). No need to run unless you
+// changed pdftext.js, coords.js, or the sample fixture.
+// Prereq: `npm install` — this test imports pdfjs-dist and ERRORS without it
+// (needs network to download). Run: `node --test test/pdf-extract.test.js`.
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
