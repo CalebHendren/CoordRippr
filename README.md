@@ -52,6 +52,9 @@ If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-
   - mass-entry for columns 1/2: fill a row range (e.g. rows 2–23) or the
     current selection in one click; `Ctrl+D` copies the cell above
   - row selection (shift/ctrl click the row numbers), add/delete rows
+  - **remove duplicate coordinates** (*Remove Duplicates…*) with a live count
+    before you commit — optionally only when columns 1–2 (e.g. Genus/Species)
+    also match, and/or only when the rows come from the same PDF
 - **CSV export** with UTF-8 BOM (Excel-safe degree symbols).
 - **✨ LLM Assist (bring your own API key)** — optionally send the PDF text to an
   LLM to *verify* the extracted coordinates and *fill columns 1–2* from the
@@ -61,7 +64,8 @@ If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-
   - Providers: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek,
     Qwen (Alibaba), Kimi (Moonshot), GLM (Zhipu), or any custom
     OpenAI-compatible endpoint. Your key is stored locally and sent only to
-    the provider you pick.
+    the provider you pick. A **Get an API key** link next to the key field
+    opens the chosen provider's key page (e.g. *DeepSeek Platform*).
   - Each provider has a **model dropdown** pre-filled with current models
     (e.g. Claude → Haiku, Sonnet, Opus, Fable), plus a **Custom…** option to
     type any other model ID.
