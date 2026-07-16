@@ -70,6 +70,10 @@ If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-
     (e.g. Claude → Haiku, Sonnet, Opus, Fable), plus a **Custom…** option to
     type any other model ID.
   - Choose to send only the pages with detected coordinates, or the full PDFs.
+  - **Parallel requests** — send several requests at once (a bounded pool, set
+    how many in the dialog; `1` = one at a time). This is a big speed-up with
+    **One request per page**, which fans a PDF out into many small independent
+    requests; turn it down if a provider rate-limits you.
   - Rows get a verdict badge: ✓ confirmed, ⚠ mismatch (click to apply the
     suggested correction), ? not found.
   - **False-positive flagging** — optionally let the LLM mark rows that
