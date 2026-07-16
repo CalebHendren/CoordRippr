@@ -9,7 +9,8 @@ import {
 import { buildPageText, rectsForRange } from './pdftext.js';
 import {
   PROVIDERS, buildRequest, extractText, parseResultsJson, normalizeResult,
-  buildPrompt, chunkWork, chunkPerPage, runPool, DEFAULT_CONCURRENCY, MAX_CONCURRENCY,
+  buildPrompt, chunkWork, chunkPerPage, runPool, runBatched,
+  DEFAULT_CONCURRENCY, MAX_CONCURRENCY, DEFAULT_BATCH_DELAY, MAX_BATCH_DELAY_MS,
 } from './llm.js';
 import { buildImagePdf } from './pdfout.js';
 import { RELEASES_API, RELEASES_PAGE, KOFI_URL, isNewer, isDue } from './updates.js';
@@ -1483,6 +1484,8 @@ function initLlmDialog() {
   if (prefs.perPage != null) $('#llm-perpage').checked = prefs.perPage;
   $('#llm-concurrency').value = clampConcurrency(prefs.concurrency ?? DEFAULT_CONCURRENCY);
   $('#llm-concurrency').max = String(MAX_CONCURRENCY);
+  $('#llm-delay').value = clampBatchDelay(prefs.batchDelay ?? DEFAULT_BATCH_DELAY);
+  $('#llm-delay').max = String(MAX_BATCH_DELAY_MS);
   if (prefs.notes != null) $('#llm-notes').checked = prefs.notes;
   if (prefs.notesSpec) $('#llm-notes-spec').value = prefs.notesSpec;
   // Auto-delete is deliberately NOT restored from prefs: it's dangerous, so
@@ -1581,6 +1584,14 @@ function clampConcurrency(v) {
   return Math.min(n, MAX_CONCURRENCY);
 }
 
+// Coerce the batch-delay field to whole milliseconds within [0, MAX_BATCH_DELAY_MS].
+// Blank/garbage input means "no delay" (0), i.e. the steady-pool path.
+function clampBatchDelay(v) {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, MAX_BATCH_DELAY_MS);
+}
+
 function collectLlmSettings() {
   const id = $('#llm-provider').value;
   const s = {
@@ -1600,6 +1611,7 @@ function collectLlmSettings() {
     ),
     perPage: $('#llm-perpage').checked,
     concurrency: clampConcurrency($('#llm-concurrency').value),
+    batchDelay: clampBatchDelay($('#llm-delay').value),
     extra: $('#llm-extra').value,
     verify: $('#llm-verify').checked,
     fill: $('#llm-fill').checked,
@@ -1618,6 +1630,7 @@ function collectLlmSettings() {
   prefs.sendMode = s.unsentOnly ? 'unsent' : 'all';
   prefs.perPage = s.perPage;
   prefs.concurrency = s.concurrency;
+  prefs.batchDelay = s.batchDelay;
   prefs.extra = s.extra;
   prefs.verify = s.verify;
   prefs.fill = s.fill;
@@ -1773,6 +1786,20 @@ $('#llm-run').addEventListener('click', async () => {
   const nextRows = new Set(); // rows that got a next-page retry
   let stopped = false; // hard stop (auth failure)
 
+  // Dispatch a list of requests. With a batch delay set, fire fixed-size batches
+  // on a wall-clock cadence (runBatched); otherwise keep a steady pool in flight
+  // (runPool). Both stop starting new work once Stop is pressed or a key fails.
+  const shouldStop = () => llmAbort || stopped;
+  const dispatch = (items, worker) =>
+    s.batchDelay > 0
+      ? runBatched(items, s.concurrency, s.batchDelay, worker, shouldStop)
+      : runPool(items, s.concurrency, worker, shouldStop);
+  // Parenthetical for the status line describing how requests are being paced.
+  const pacingNote = () =>
+    s.batchDelay > 0
+      ? ` (${s.concurrency} per batch, a batch every ${s.batchDelay}ms)`
+      : s.concurrency > 1 ? ` (${s.concurrency} at once)` : '';
+
   // A row counts as "processed by the LLM" only once it comes back badged (a
   // ✓/⚠/? verdict or 🗑 flag). Rows the model silently drops are re-sent below
   // until badged, and never marked sent, so a re-run picks them up too.
@@ -1851,18 +1878,20 @@ $('#llm-run').addEventListener('click', async () => {
       chunks.push(...(perPage ? chunkPerPage(pages, w.rows) : chunkWork(pages, w.rows)));
     }
 
-    // Up to s.concurrency requests fly at once (1 = the old sequential path).
+    // Up to s.concurrency requests fly at once (1 = the old sequential path);
+    // with a batch delay set, batches of s.concurrency instead go out every
+    // s.batchDelay ms regardless of whether the previous batch finished.
     // Each worker fetches, then applies its own results synchronously — those
     // applies can't interleave (single-threaded), so counts/rows stay consistent.
     let done = 0;
     const total = chunks.length;
-    await runPool(chunks, s.concurrency, async (chunk, n) => {
+    await dispatch(chunks, async (chunk, n) => {
       const where = perPage ? `${chunk.pages[0].file} p.${chunk.pages[0].page}` : chunk.pages[0].file;
       const results = await sendChunk(chunk, `Request ${n + 1}`, allowPrev, allowNext);
       done++;
       llmStatus(
         `${done}/${total} request${total === 1 ? '' : 's'} done` +
-        `${s.concurrency > 1 ? ` (${s.concurrency} at once)` : ''} — ` +
+        `${pacingNote()} — ` +
         `${chunk.rows.length} row${chunk.rows.length === 1 ? '' : 's'} from ${where}…`
       );
       if (!results) return;
@@ -1880,7 +1909,7 @@ $('#llm-run').addEventListener('click', async () => {
           if (m && m.page < m.fileRec.numPages && state.rows.some((r) => r.id === res.row)) needNext.set(res.row, m.page + 1);
         }
       }
-    }, () => llmAbort || stopped);
+    });
 
     // Previous-page passes: rows the model couldn't fill from their own page
     // are automatically resent with the preceding page(s) included, walking
@@ -1898,7 +1927,7 @@ $('#llm-run').addEventListener('click', async () => {
       needPrev.clear();
       const list = [...groups.values()];
       let done = 0;
-      await runPool(list, s.concurrency, async (g) => {
+      await dispatch(list, async (g) => {
         const pages = [];
         for (let num = g.backTo; num <= g.page; num++) {
           pages.push({ file: g.fileRec.name, page: num, text: await pageTextFor(g.fileRec, num) });
@@ -1913,7 +1942,7 @@ $('#llm-run').addEventListener('click', async () => {
         if (!results) return;
         applyAndRender(results);
         if (canGoFurther) collectPrevRequests(results, g.backTo - 1);
-      }, () => llmAbort || stopped);
+      });
     }
 
     // Next-page passes: rows the model couldn't fill from their own page are
@@ -1932,7 +1961,7 @@ $('#llm-run').addEventListener('click', async () => {
       needNext.clear();
       const list = [...groups.values()];
       let done = 0;
-      await runPool(list, s.concurrency, async (g) => {
+      await dispatch(list, async (g) => {
         const pages = [];
         for (let num = g.page; num <= g.forwardTo; num++) {
           pages.push({ file: g.fileRec.name, page: num, text: await pageTextFor(g.fileRec, num) });
@@ -1947,7 +1976,7 @@ $('#llm-run').addEventListener('click', async () => {
         if (!results) return;
         applyAndRender(results);
         if (canGoFurther) collectNextRequests(results, g.forwardTo + 1);
-      }, () => llmAbort || stopped);
+      });
     }
 
     // Badge passes: every row we sent should come back with a badge. Rows the
@@ -1967,7 +1996,7 @@ $('#llm-run').addEventListener('click', async () => {
       }
       const list = [...groups.values()];
       let done = 0;
-      await runPool(list, s.concurrency, async (g) => {
+      await dispatch(list, async (g) => {
         const pages = [{ file: g.fileRec.name, page: g.page, text: await pageTextFor(g.fileRec, g.page) }];
         const results = await sendChunk({ pages, rows: g.rows }, `Badge retry ${pass}`, false, false);
         done++;
@@ -1977,7 +2006,7 @@ $('#llm-run').addEventListener('click', async () => {
         );
         if (!results) return;
         applyAndRender(results);
-      }, () => llmAbort || stopped);
+      });
     }
     counts.rebadged = unbadgedBefore.filter((id) => hasBadge(id)).length;
     counts.unbadged = [...sentRowIds].filter((id) => !hasBadge(id) && state.rows.some((r) => r.id === id)).length;

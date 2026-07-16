@@ -429,6 +429,11 @@ export function chunkPerPage(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
 export const DEFAULT_CONCURRENCY = 4;
 export const MAX_CONCURRENCY = 8;
 
+// Wall-clock pacing between batches (ms). 0 = no pacing (the runPool path).
+// Capped at 10 minutes so a fat-fingered value can't wedge a run for hours.
+export const DEFAULT_BATCH_DELAY = 0;
+export const MAX_BATCH_DELAY_MS = 600000;
+
 /**
  * Run `worker(item, index)` over `items`, at most `limit` in flight (fixed-size
  * pool over a shared cursor). Results come back in ORIGINAL item order.
@@ -463,5 +468,57 @@ export async function runPool(items, limit, worker, shouldStop = () => false) {
   const runners = [];
   for (let k = 0; k < size; k++) runners.push(runner());
   await Promise.all(runners);
+  return results;
+}
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Fire `worker(item, index)` over `items` in fixed-size batches on a wall-clock
+ * cadence: launch a batch of `size`, wait `delayMs`, launch the next batch —
+ * WITHOUT waiting for the previous batch to finish. So (unlike `runPool`, which
+ * keeps a steady `size` in flight by backfilling as workers return) the number
+ * actually in flight can exceed `size` when requests outlast the interval. That
+ * is the point: pace request *starts* by the clock, not by completion.
+ *
+ * Results come back in ORIGINAL item order. Mutating shared state from inside a
+ * worker is safe for the same single-threaded reason as `runPool`: each worker
+ * runs to its next `await` uninterrupted.
+ *
+ * `shouldStop()` is polled before each batch; once true, no new batches start
+ * (already-launched ones finish; their slots stay undefined). A worker that
+ * rejects ends the run (the first error is re-thrown after in-flight work
+ * settles), matching `runPool`'s "an error aborts" behaviour.
+ *
+ * @param {Array} items
+ * @param {number} size     batch size (coerced to >= 1)
+ * @param {number} delayMs  gap between batch *starts* (coerced to >= 0)
+ * @param {(item, index) => Promise} worker
+ * @param {() => boolean} [shouldStop]
+ * @param {(ms: number) => Promise} [sleep]  overridable timer (injected in tests)
+ * @returns {Promise<Array>} results in item order
+ */
+export async function runBatched(items, size, delayMs, worker, shouldStop = () => false, sleep = defaultSleep) {
+  const n = items.length;
+  const results = new Array(n);
+  const batch = Math.max(1, Math.floor(size) || 1);
+  const gap = Math.max(0, Math.floor(delayMs) || 0);
+  const inflight = [];
+  let firstErr = null;
+  for (let start = 0; start < n; start += batch) {
+    if (shouldStop() || firstErr) break;
+    for (let i = start; i < Math.min(start + batch, n); i++) {
+      const idx = i;
+      inflight.push(
+        Promise.resolve()
+          .then(() => worker(items[idx], idx))
+          .then((r) => { results[idx] = r; }, (e) => { if (!firstErr) firstErr = e; })
+      );
+    }
+    // Pace before the next batch; skip the wait after the final batch.
+    if (gap > 0 && start + batch < n) await sleep(gap);
+  }
+  await Promise.all(inflight);
+  if (firstErr) throw firstErr;
   return results;
 }
