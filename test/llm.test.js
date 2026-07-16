@@ -13,8 +13,10 @@ import {
   chunkWork,
   chunkPerPage,
   runPool,
+  runBatched,
   DEFAULT_CONCURRENCY,
   MAX_CONCURRENCY,
+  MAX_BATCH_DELAY_MS,
   MAX_ROWS_PER_CHUNK,
 } from '../src/llm.js';
 
@@ -384,7 +386,94 @@ test('runPool handles an empty item list', async () => {
   assert.deepEqual(out, []);
 });
 
-test('concurrency constants are sane', () => {
+test('runBatched returns results in item order regardless of completion order', async () => {
+  const items = [30, 5, 20, 1, 15];
+  const out = await runBatched(items, 2, 3, async (ms, i) => {
+    await tick(ms); // later items finish first
+    return `${i}:${ms}`;
+  });
+  assert.deepEqual(out, ['0:30', '1:5', '2:20', '3:1', '4:15']);
+});
+
+test('runBatched starts each batch on the clock without waiting for the last to finish', async () => {
+  const started = [];
+  let release;
+  const gate = new Promise((r) => { release = r; }); // workers hang until released
+  const sleeps = [];
+  const sleep = (ms) => { sleeps.push(ms); return Promise.resolve(); }; // instant, records the gap
+  const p = runBatched([0, 1, 2, 3, 4, 5], 2, 250, async (v, i) => {
+    started.push(i);
+    await gate; // never resolves until we release, below
+    return v * 10;
+  }, () => false, sleep);
+  // The dispatch loop is microtask-driven here (instant sleep), so a macrotask
+  // turn is enough for every batch to have been launched.
+  await tick(0);
+  await tick(0);
+  // All six started though not one worker has resolved — batches fire on the
+  // clock, not on completion.
+  assert.deepEqual(started, [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(sleeps, [250, 250]); // two gaps between three batches
+  release();
+  assert.deepEqual(await p, [0, 10, 20, 30, 40, 50]);
+});
+
+test('runBatched groups items into fixed-size batches', async () => {
+  const batches = [];
+  const sleep = () => { batches.push('gap'); return Promise.resolve(); };
+  let cur = [];
+  await runBatched([1, 2, 3, 4, 5], 2, 10, async (n) => {
+    cur.push(n);
+  }, () => false, sleep);
+  // 5 items, size 2 -> batches [1,2] [3,4] [5]; two gaps between them.
+  assert.equal(batches.length, 2);
+  assert.deepEqual(cur, [1, 2, 3, 4, 5]);
+});
+
+test('runBatched stops launching new batches once shouldStop() is true', async () => {
+  const started = [];
+  let stop = false;
+  const sleep = () => Promise.resolve();
+  const out = await runBatched([1, 2, 3, 4, 5, 6], 2, 100, async (n) => {
+    started.push(n);
+    if (n === 2) stop = true; // request a stop from inside the first batch
+    return n * 10;
+  }, () => stop, sleep);
+  // First batch (1,2) starts; shouldStop is polled before batch 2, so 3+ never start.
+  assert.deepEqual(started, [1, 2]);
+  assert.deepEqual(out.slice(0, 2), [10, 20]);
+  assert.equal(out[2], undefined); // untouched slots stay undefined
+});
+
+test('runBatched surfaces a worker error and stops launching later batches', async () => {
+  const started = [];
+  // A real (tiny) delay lets the rejection propagate before the next batch.
+  await assert.rejects(
+    runBatched([1, 2, 3, 4], 2, 5, async (n) => {
+      started.push(n);
+      if (n === 1) throw new Error('boom');
+    }, () => false),
+    /boom/
+  );
+  assert.deepEqual(started, [1, 2]); // batch 2 (3,4) never launches
+});
+
+test('runBatched coerces a bad size to one worker and a bad delay to no wait', async () => {
+  const seen = [];
+  const sleeps = [];
+  const sleep = (ms) => { sleeps.push(ms); return Promise.resolve(); };
+  await runBatched([1, 2, 3], 0, -50, async (n) => { seen.push(n); }, () => false, sleep);
+  assert.deepEqual(seen, [1, 2, 3]);
+  assert.deepEqual(sleeps, []); // delay coerced to 0 -> never sleeps
+});
+
+test('runBatched handles an empty item list', async () => {
+  const out = await runBatched([], 4, 100, async () => { throw new Error('should not run'); });
+  assert.deepEqual(out, []);
+});
+
+test('concurrency and pacing constants are sane', () => {
   assert.ok(DEFAULT_CONCURRENCY >= 1 && DEFAULT_CONCURRENCY <= MAX_CONCURRENCY);
   assert.ok(MAX_CONCURRENCY >= 1);
+  assert.ok(MAX_BATCH_DELAY_MS > 0);
 });
