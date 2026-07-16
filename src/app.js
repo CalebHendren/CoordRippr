@@ -571,6 +571,7 @@ function renderTable() {
   delFlaggedBtn.textContent = `🗑 Delete Flagged (${flagged})`;
   renderFillCols();
   refreshRowClasses();
+  positionFillHandle();
 }
 
 function buildRowEl(row, cols) {
@@ -805,6 +806,181 @@ tbodyEl.addEventListener('keydown', (e) => {
   input.value = src.value;
   input.dispatchEvent(new Event('change', { bubbles: true }));
 });
+
+// ---------------------------------------------------------------------------
+// Excel-style drag-to-fill: focus a cell, then drag the little handle at its
+// bottom-right corner down (or up) to copy that value into every cell it
+// sweeps over. Works for the data columns, the coordinate columns and Notes.
+// ---------------------------------------------------------------------------
+
+const csvScroll = $('#csv-scroll');
+const fillHandle = $('#fill-handle');
+
+let fillAnchor = null; // {rowId, col} — the cell the handle is attached to
+let filling = null;    // active drag: {col, srcIndex, targetIndex, value, lastX, lastY}
+let fillScrollTimer = null;
+
+// A stable descriptor of a column, derived from one of its cell inputs, so the
+// same column can be located in any other row.
+function colDescOf(input) {
+  if (input.dataset.cell != null) return { kind: 'cell', index: Number(input.dataset.cell) };
+  if (input.dataset.field === 'notes') return { kind: 'notes' };
+  if (input.dataset.col != null) return { kind: 'coord', field: input.dataset.field, colIndex: Number(input.dataset.col) };
+  return null;
+}
+
+function inputInRow(tr, col) {
+  if (!tr) return null;
+  if (col.kind === 'cell') return tr.querySelector(`td input[data-cell="${col.index}"]`);
+  if (col.kind === 'notes') return tr.querySelector('td.notescol input');
+  if (col.kind === 'coord') return tr.querySelector(`td.coord input[data-col="${col.colIndex}"]`);
+  return null;
+}
+
+// Park the handle over the bottom-right corner of the anchored cell. Positions
+// in the scroll container's content coordinates so it rides along on scroll.
+function positionFillHandle() {
+  if (!fillHandle) return;
+  const tr = fillAnchor && tbodyEl.querySelector(`tr[data-row="${fillAnchor.rowId}"]`);
+  const td = tr && inputInRow(tr, fillAnchor.col)?.closest('td');
+  if (!td) { fillAnchor = null; fillHandle.classList.remove('visible'); return; }
+  const cRect = csvScroll.getBoundingClientRect();
+  const tRect = td.getBoundingClientRect();
+  fillHandle.style.left = `${tRect.right - cRect.left + csvScroll.scrollLeft - 4}px`;
+  fillHandle.style.top = `${tRect.bottom - cRect.top + csvScroll.scrollTop - 4}px`;
+  fillHandle.classList.add('visible');
+}
+
+// Focusing a cell moves the handle to it.
+tbodyEl.addEventListener('focusin', (e) => {
+  if (e.target.tagName !== 'INPUT') return;
+  const col = colDescOf(e.target);
+  if (!col) { fillAnchor = null; positionFillHandle(); return; }
+  fillAnchor = { rowId: e.target.closest('tr').dataset.row, col };
+  positionFillHandle();
+});
+
+function fillRangeRows() {
+  const a = Math.min(filling.srcIndex, filling.targetIndex);
+  const b = Math.max(filling.srcIndex, filling.targetIndex);
+  return state.rows.slice(a, b + 1);
+}
+
+function paintFillPreview() {
+  for (const td of tbodyEl.querySelectorAll('td.fill-target')) td.classList.remove('fill-target');
+  for (const row of fillRangeRows()) {
+    const tr = tbodyEl.querySelector(`tr[data-row="${row.id}"]`);
+    inputInRow(tr, filling.col)?.closest('td')?.classList.add('fill-target');
+  }
+}
+
+// Which row is the pointer over? Falls back to the first/last row when the
+// pointer is dragged past the ends of the list.
+function updateFillTarget(x, y) {
+  if (!filling) return;
+  const el = document.elementFromPoint(x, y);
+  const tr = el && el.closest && el.closest('#csv-table tbody tr');
+  if (tr && tr.dataset.row) {
+    const idx = state.rows.findIndex((r) => r.id === tr.dataset.row);
+    if (idx >= 0) filling.targetIndex = idx;
+  } else {
+    const rows = [...tbodyEl.querySelectorAll('tr')];
+    if (rows.length) {
+      if (y >= rows[rows.length - 1].getBoundingClientRect().bottom) filling.targetIndex = state.rows.length - 1;
+      else if (y <= rows[0].getBoundingClientRect().top) filling.targetIndex = 0;
+    }
+  }
+  paintFillPreview();
+}
+
+// Auto-scroll the table while the pointer sits near its top/bottom edge, so a
+// fill can run far past the visible rows.
+function fillAutoScroll(y) {
+  const rect = csvScroll.getBoundingClientRect();
+  const EDGE = 30;
+  const dir = y > rect.bottom - EDGE ? 1 : y < rect.top + EDGE ? -1 : 0;
+  if (dir === 0) { stopFillAutoScroll(); return; }
+  if (fillScrollTimer) return;
+  fillScrollTimer = setInterval(() => {
+    csvScroll.scrollTop += dir * 14;
+    if (filling) updateFillTarget(filling.lastX, filling.lastY);
+  }, 30);
+}
+
+function stopFillAutoScroll() {
+  if (fillScrollTimer) { clearInterval(fillScrollTimer); fillScrollTimer = null; }
+}
+
+function onFillMove(e) {
+  if (!filling) return;
+  filling.lastX = e.clientX;
+  filling.lastY = e.clientY;
+  updateFillTarget(e.clientX, e.clientY);
+  fillAutoScroll(e.clientY);
+}
+
+function onFillUp() {
+  window.removeEventListener('mousemove', onFillMove);
+  window.removeEventListener('mouseup', onFillUp);
+  stopFillAutoScroll();
+  csvScroll.classList.remove('filling');
+  fillHandle.style.pointerEvents = '';
+  const f = filling;
+  filling = null;
+  for (const td of tbodyEl.querySelectorAll('td.fill-target')) td.classList.remove('fill-target');
+  if (!f) return;
+  const a = Math.min(f.srcIndex, f.targetIndex);
+  const b = Math.max(f.srcIndex, f.targetIndex);
+  const rows = state.rows.slice(a, b + 1);
+  if (rows.length <= 1) return; // no drag — nothing to fill
+  const ids = new Set(rows.map((r) => r.id));
+  fillColumn(ids, f.col, f.value);
+  const n = rows.length - 1;
+  setStatus(`Filled ${n} cell${n === 1 ? '' : 's'} by dragging.`);
+}
+
+fillHandle.addEventListener('mousedown', (e) => {
+  if (!fillAnchor) return;
+  e.preventDefault(); // keep focus (and the handle) on the source cell
+  const srcTr = tbodyEl.querySelector(`tr[data-row="${fillAnchor.rowId}"]`);
+  const srcInput = inputInRow(srcTr, fillAnchor.col);
+  const srcIndex = state.rows.findIndex((r) => r.id === fillAnchor.rowId);
+  if (!srcInput || srcIndex < 0) return;
+  filling = {
+    col: fillAnchor.col, srcIndex, targetIndex: srcIndex,
+    value: srcInput.value, lastX: e.clientX, lastY: e.clientY,
+  };
+  csvScroll.classList.add('filling');
+  fillHandle.style.pointerEvents = 'none'; // let elementFromPoint see the rows
+  window.addEventListener('mousemove', onFillMove);
+  window.addEventListener('mouseup', onFillUp);
+});
+
+// Write one value into a single column of the given rows, parsing coordinate
+// columns the same way a manual edit would.
+function fillColumn(rowIds, col, value) {
+  for (const row of state.rows) {
+    if (!rowIds.has(row.id)) continue;
+    if (col.kind === 'cell') {
+      if (!row.cells) row.cells = emptyCells();
+      row.cells[col.index] = value;
+    } else if (col.kind === 'notes') {
+      row.notes = value;
+    } else if (col.kind === 'coord') {
+      const rawKey = col.field === 'lat' ? 'latRaw' : 'lonRaw';
+      const text = String(value).trim();
+      if (text === '') {
+        row[col.field] = null; row[rawKey] = null;
+      } else {
+        const dd = parseSingle(text, col.field);
+        if (dd != null) { row[col.field] = dd; row[rawKey] = null; }
+        else { row[col.field] = null; row[rawKey] = text; }
+      }
+    }
+  }
+  renderTable();
+  persistSoon();
+}
 
 // ---------------------------------------------------------------------------
 // Toolbar / tools
@@ -1303,7 +1479,9 @@ function initLlmDialog() {
   $('#llm-files-all').addEventListener('click', () => setAllLlmFiles(true));
   $('#llm-files-none').addEventListener('click', () => setAllLlmFiles(false));
   if (prefs.extra) $('#llm-extra').value = prefs.extra;
-  if (prefs.verify != null) $('#llm-verify').checked = prefs.verify;
+  // Verification is always on — every sent row must come back with a badge —
+  // so it is never restored to "off" from an old preference.
+  $('#llm-verify').checked = true;
   if (prefs.fill != null) $('#llm-fill').checked = prefs.fill;
   if (prefs.overwrite != null) $('#llm-overwrite').checked = prefs.overwrite;
   if (prefs.flagDelete != null) $('#llm-flagdel').checked = prefs.flagDelete;
@@ -1561,7 +1739,7 @@ $('#llm-run').addEventListener('click', async () => {
   $('#llm-run').textContent = 'Stop';
   const counts = {
     ok: 0, mismatch: 0, not_found: 0, filled: 0, noted: 0,
-    flagged: 0, deleted: 0, deletedInfo: [], errors: [],
+    flagged: 0, deleted: 0, rebadged: 0, unbadged: 0, deletedInfo: [], errors: [],
   };
 
   // The Notes column comes into existence the first time a notes run starts
@@ -1590,6 +1768,17 @@ $('#llm-run').addEventListener('click', async () => {
   const prevRows = new Set(); // rows that got a previous-page retry
   const nextRows = new Set(); // rows that got a next-page retry
   let stopped = false; // hard stop (auth failure)
+
+  // Every row that went out in a parsed request. A row only really counts as
+  // "processed by the LLM" once it comes back with a badge — a ✓/⚠/? verdict or
+  // a 🗑 flag. Rows the model silently drops (no badge) are re-sent below until
+  // they are badged, and never marked as sent, so a re-run picks them up too.
+  const MAX_BADGE_RETRIES = 2;
+  const sentRowIds = new Set();
+  const hasBadge = (id) => {
+    const r = state.rows.find((rr) => rr.id === id);
+    return !!(r && r.llm && (r.llm.verdict || r.llm.del));
+  };
 
   // One request: build prompt, send, parse. Applies nothing itself.
   const sendChunk = async (chunk, label, allowPrevHere, allowNextHere = false) => {
@@ -1626,16 +1815,6 @@ $('#llm-run').addEventListener('click', async () => {
     applyLlmResults(results, s, counts, meta);
     if (counts.deleted > deletedBefore) renderAll();
     else renderTable();
-  };
-
-  // Rows count as "sent" once an LLM reply for their chunk parsed — failed
-  // requests leave their rows unsent, so an "only unsent" re-run retries them.
-  const markSent = (chunkRows) => {
-    const now = Date.now();
-    for (const cr of chunkRows) {
-      const row = state.rows.find((r) => r.id === cr.id);
-      if (row) row.llmSent = now;
-    }
   };
 
   // rowId -> earliest page to include on the next previous-page pass.
@@ -1676,7 +1855,7 @@ $('#llm-run').addEventListener('click', async () => {
       llmStatus(`Request ${n + 1}/${chunks.length} — ${chunk.rows.length} row${chunk.rows.length === 1 ? '' : 's'} from ${where}…`);
       const results = await sendChunk(chunk, `Request ${n + 1}`, allowPrev, allowNext);
       if (!results) continue;
-      markSent(chunk.rows);
+      for (const cr of chunk.rows) sentRowIds.add(cr.id);
       applyAndRender(results);
       if (allowPrev) {
         for (const res of results) {
@@ -1759,8 +1938,49 @@ $('#llm-run').addEventListener('click', async () => {
         if (canGoFurther) collectNextRequests(results, g.forwardTo + 1);
       }
     }
+
+    // Badge passes: every row we sent should come back with a badge. Rows the
+    // model dropped (no verdict, no flag) are re-sent — one focused request per
+    // page — until they are badged or we run out of retries.
+    const unbadgedBefore = [...sentRowIds].filter((id) => !hasBadge(id) && state.rows.some((r) => r.id === id));
+    for (let pass = 1; pass <= MAX_BADGE_RETRIES && !llmAbort && !stopped; pass++) {
+      const pending = [...sentRowIds].filter((id) => !hasBadge(id) && state.rows.some((r) => r.id === id));
+      if (pending.length === 0) break;
+      const groups = new Map(); // same file + page -> one request
+      for (const id of pending) {
+        const m = meta.get(id);
+        if (!m) continue;
+        const key = `${m.fileRec.id}:${m.page}`;
+        if (!groups.has(key)) groups.set(key, { fileRec: m.fileRec, page: m.page, rows: [] });
+        groups.get(key).rows.push(m.llmRow);
+      }
+      let gi = 0;
+      for (const g of groups.values()) {
+        if (llmAbort || stopped) break;
+        gi++;
+        llmStatus(
+          `Badge retry ${pass}/${MAX_BADGE_RETRIES}, request ${gi}/${groups.size} — ` +
+          `re-checking ${g.rows.length} row${g.rows.length === 1 ? '' : 's'} the model skipped on ${g.fileRec.name} p.${g.page}…`
+        );
+        const pages = [{ file: g.fileRec.name, page: g.page, text: await pageTextFor(g.fileRec, g.page) }];
+        const results = await sendChunk({ pages, rows: g.rows }, `Badge retry ${pass}`, false, false);
+        if (!results) continue;
+        applyAndRender(results);
+      }
+    }
+    counts.rebadged = unbadgedBefore.filter((id) => hasBadge(id)).length;
+    counts.unbadged = [...sentRowIds].filter((id) => !hasBadge(id) && state.rows.some((r) => r.id === id)).length;
   } catch (err) {
     counts.errors.push(err && err.message ? err.message : String(err));
+  }
+
+  // A row only counts as "sent to an LLM" once it has a badge, so rows the model
+  // never badged stay unsent and are picked up again by an "only unsent" re-run.
+  const sentAt = Date.now();
+  for (const id of sentRowIds) {
+    if (!hasBadge(id)) continue;
+    const row = state.rows.find((r) => r.id === id);
+    if (row) row.llmSent = sentAt;
   }
 
   llmRunning = false;
@@ -1771,6 +1991,8 @@ $('#llm-run').addEventListener('click', async () => {
   if (s.notes) parts.push(`${counts.noted} note${counts.noted === 1 ? '' : 's'} written`);
   if (prevRows.size) parts.push(`${prevRows.size} row${prevRows.size === 1 ? '' : 's'} re-sent with earlier pages`);
   if (nextRows.size) parts.push(`${nextRows.size} row${nextRows.size === 1 ? '' : 's'} re-sent with later pages`);
+  if (counts.rebadged) parts.push(`${counts.rebadged} skipped row${counts.rebadged === 1 ? '' : 's'} re-sent to get a badge`);
+  if (counts.unbadged) parts.push(`${counts.unbadged} row${counts.unbadged === 1 ? '' : 's'} still un-badged (run again to retry)`);
   if (s.unsentOnly && skippedSent) parts.push(`${skippedSent} already-sent row${skippedSent === 1 ? '' : 's'} skipped`);
   if (s.flagDelete) {
     parts.push(s.autoDelete
