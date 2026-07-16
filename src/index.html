@@ -162,6 +162,7 @@
           <label><input type="radio" name="llm-scope" value="all" /> Full PDFs (all pages)</label>
           <label title="Each page's rows go out with only that page's text — smaller, more focused requests. If the model can't fill a column from its page, the previous or next page is sent automatically. Ignored when full PDFs are sent."><input type="checkbox" id="llm-perpage" checked /> One request per page</label>
           <label class="llm-conc" title="How many requests to send at the same time. Higher finishes faster (especially with 'One request per page', which fans a PDF out into many small requests) but is more likely to hit the provider's rate limit. 1 = one at a time.">Send <input type="number" id="llm-concurrency" min="1" max="8" step="1" value="4" /> request(s) at once</label>
+          <label class="llm-delay" title="Pace requests by the clock: every so many milliseconds a fresh batch (the size set above) is sent, whether or not the previous batch has come back — so a slow provider can have more than that many in flight at once. 0 = no pacing: keep the set number in flight, starting a new request as soon as one finishes.">wait <input type="number" id="llm-delay" min="0" max="600000" step="100" value="0" /> ms between batches</label>
         </fieldset>
 
         <fieldset class="wide">

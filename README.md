@@ -74,6 +74,13 @@ If CoordRippr saves you time, consider [buying me a coffee on Ko-fi](https://ko-
     how many in the dialog; `1` = one at a time). This is a big speed-up with
     **One request per page**, which fans a PDF out into many small independent
     requests; turn it down if a provider rate-limits you.
+  - **Batch pacing (delay between requests)** — optionally set a *wait … ms
+    between batches* value. Instead of keeping a steady number in flight, a
+    fresh batch (the "at once" size) is fired every so many milliseconds
+    **regardless of whether the previous batch has finished** — e.g. 4 pages
+    now, 4 more a second later, and so on. Handy for providers that meter
+    requests-per-minute rather than concurrency. `0` (the default) keeps the
+    original steady-pool behaviour.
   - Rows get a verdict badge: ✓ confirmed, ⚠ mismatch (click to apply the
     suggested correction), ? not found.
   - **False-positive flagging** — optionally let the LLM mark rows that
