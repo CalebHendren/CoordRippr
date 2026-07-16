@@ -402,6 +402,9 @@ export function chunkWork(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
  * text, one request per page (split further only when a single page exceeds
  * the row cap). Pages without rows are skipped entirely.
  *
+ * Per-page mode is where parallelism pays off most: it fans one PDF out into
+ * many small, fully independent requests (see `runPool`).
+ *
  * @param {Array} pages [{file, page, text}]
  * @param {Array} rows  [{id, page, ...}] rows referencing those pages
  * @returns {Array<{pages: Array, rows: Array}>}
@@ -422,4 +425,56 @@ export function chunkPerPage(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
     }
   }
   return chunks;
+}
+
+// ---------------------------------------------------------------------------
+// Bounded-concurrency runner: send several requests at once
+// ---------------------------------------------------------------------------
+
+// How many requests may be in flight at once by default, and the ceiling the
+// UI exposes. Kept modest so a big per-page fan-out doesn't trip provider rate
+// limits; 1 reproduces the old strictly-sequential behaviour.
+export const DEFAULT_CONCURRENCY = 4;
+export const MAX_CONCURRENCY = 8;
+
+/**
+ * Run `worker(item, index)` over `items` with at most `limit` calls in flight
+ * at once (a fixed-size pool of runners pulling from a shared cursor). Results
+ * are returned in the ORIGINAL item order regardless of completion order, so a
+ * caller can rely on positions even though the work overlaps.
+ *
+ * Because JavaScript is single-threaded, each worker runs to its next `await`
+ * without interruption — so a worker that mutates shared state synchronously
+ * after its own `await` (e.g. applying a parsed response) can never interleave
+ * with another. That is what makes it safe to apply LLM results from inside the
+ * pool.
+ *
+ * `shouldStop()`, when provided, is polled before each item is picked up; once
+ * it returns true no new items are started (in-flight ones still finish) and
+ * their result slots stay `undefined`. This preserves the app's "stop after the
+ * current request" / auth-failure short-circuit semantics.
+ *
+ * @param {Array} items
+ * @param {number} limit           max concurrent workers (coerced to >= 1)
+ * @param {(item, index) => Promise} worker
+ * @param {() => boolean} [shouldStop]
+ * @returns {Promise<Array>} results in item order
+ */
+export async function runPool(items, limit, worker, shouldStop = () => false) {
+  const n = items.length;
+  const results = new Array(n);
+  const size = Math.max(1, Math.min(Math.floor(limit) || 1, n || 1));
+  let next = 0;
+  const runner = async () => {
+    for (;;) {
+      if (shouldStop()) return;
+      const i = next++;
+      if (i >= n) return;
+      results[i] = await worker(items[i], i);
+    }
+  };
+  const runners = [];
+  for (let k = 0; k < size; k++) runners.push(runner());
+  await Promise.all(runners);
+  return results;
 }
