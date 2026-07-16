@@ -82,6 +82,7 @@
           <thead></thead>
           <tbody></tbody>
         </table>
+        <div id="fill-handle" title="Drag down to fill the cells below with this value (like Excel)"></div>
         <div id="csv-empty" class="empty-hint">
           Open a folder of PDFs to start ripping coordinates.<br/>
           <span class="muted">Detected pairs land here; click a row to jump to it in the PDF.<br/>
@@ -164,7 +165,7 @@
 
         <fieldset class="wide">
           <legend>Tasks</legend>
-          <label><input type="checkbox" id="llm-verify" checked /> Verify coordinates against the PDF text</label>
+          <label title="Every row you send is checked against the PDF text and gets a ✓ / ⚠ / ? badge. Rows the model skips (no badge) are re-sent automatically until they come back badged."><input type="checkbox" id="llm-verify" checked disabled /> Verify coordinates against the PDF text <span class="muted">(always on — every sent row gets a badge)</span></label>
           <label><input type="checkbox" id="llm-fill" checked /> Fill the data columns from the PDF text</label>
           <label><input type="checkbox" id="llm-overwrite" /> Overwrite non-empty cells</label>
           <label title="Rows the LLM thinks are not real coordinates get a 🗑 flag — you decide what to delete"><input type="checkbox" id="llm-flagdel" /> Flag suspected false positives 🗑</label>
