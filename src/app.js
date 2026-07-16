@@ -14,6 +14,7 @@ import {
 import { buildImagePdf } from './pdfout.js';
 import { RELEASES_API, RELEASES_PAGE, KOFI_URL, isNewer, isDue } from './updates.js';
 import { packState, unpackState, storage } from './persist.js';
+import { findDuplicateRowIds } from './dedup.js';
 
 const api = window.coordrippr;
 const IS_WEB = api.platform === 'web';
@@ -1004,6 +1005,54 @@ $('#btn-del-flagged').addEventListener('click', () => {
   setStatus(`Deleted ${flagged.length} LLM-flagged row${flagged.length === 1 ? '' : 's'}.`);
 });
 
+// ---------------------------------------------------------------------------
+// Remove duplicate coordinates
+// ---------------------------------------------------------------------------
+
+const dedupDialog = $('#dedup-dialog');
+
+function dedupOpts() {
+  return {
+    sameCols: $('#dedup-samecols').checked,
+    samePdf: $('#dedup-samepdf').checked,
+  };
+}
+
+// Refresh the "N of M would be removed" preview and enable/disable the button.
+function syncDedupPreview() {
+  const n = findDuplicateRowIds(state.rows, dedupOpts()).length;
+  const total = state.rows.length;
+  $('#dedup-status').textContent = n === 0
+    ? `No duplicate coordinates found among the ${total} row${total === 1 ? '' : 's'}.`
+    : `${n} duplicate row${n === 1 ? '' : 's'} will be removed (of ${total}).`;
+  $('#dedup-run').disabled = n === 0;
+}
+
+$('#btn-dedup').addEventListener('click', () => {
+  if (state.rows.length === 0) { setStatus('Nothing to de-duplicate yet.'); return; }
+  // The label references the current column-1/2 header names.
+  const c1 = (state.cols[0] || 'Column 1').trim() || 'Column 1';
+  const c2 = (state.cols[1] || 'Column 2').trim() || 'Column 2';
+  $('#dedup-samecols-label').textContent = `Only when columns 1 & 2 (${c1} & ${c2}) also match`;
+  syncDedupPreview();
+  dedupDialog.showModal();
+});
+
+for (const id of ['dedup-samecols', 'dedup-samepdf']) {
+  $(`#${id}`).addEventListener('change', syncDedupPreview);
+}
+
+$('#dedup-run').addEventListener('click', () => {
+  const ids = findDuplicateRowIds(state.rows, dedupOpts());
+  if (ids.length === 0) { syncDedupPreview(); return; }
+  removeRows(new Set(ids));
+  state.anchor = null;
+  renderAll();
+  persistSoon();
+  setStatus(`Removed ${ids.length} duplicate coordinate row${ids.length === 1 ? '' : 's'}.`);
+  dedupDialog.close();
+});
+
 function applyFill(rowIds, colKey, value) {
   let n = 0;
   for (const row of state.rows) {
@@ -1197,6 +1246,16 @@ function syncLlmProviderFields() {
   $('#llm-url').value = prefs.urls[id] ?? p.url;
   $('#llm-key').value = prefs.keys[id] ?? '';
   $('#llm-key').placeholder = p.keyHint || '';
+  const link = $('#llm-key-link');
+  if (p.keyUrl) {
+    link.textContent = `Get an API key from ${p.keyName || p.label}`;
+    link.dataset.url = p.keyUrl;
+    link.classList.remove('hidden');
+  } else {
+    link.textContent = '';
+    delete link.dataset.url;
+    link.classList.add('hidden');
+  }
 }
 
 // Fill the model dropdown from the provider's preset list plus a "Custom…"
@@ -1264,6 +1323,10 @@ function initLlmDialog() {
   syncLlmProviderFields();
   sel.addEventListener('change', syncLlmProviderFields);
   $('#llm-model-select').addEventListener('change', onModelSelectChange);
+  $('#llm-key-link').addEventListener('click', (e) => {
+    const url = e.currentTarget.dataset.url;
+    if (url) api.openExternal(url);
+  });
 }
 
 function syncAutoDelState() {

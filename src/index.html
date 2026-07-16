@@ -60,6 +60,7 @@
           <button id="btn-add-col" title="Add another data column (2 by default)">+ Col</button>
           <button id="btn-del-col" title="Remove the last data column">− Col</button>
           <button id="btn-del-rows" title="Delete the selected rows">Delete Selected</button>
+          <button id="btn-dedup" title="Remove rows that share the same coordinates (with options)">Remove Duplicates…</button>
           <button id="btn-del-flagged" class="hidden danger" title="Delete every row the LLM flagged as a false positive">🗑 Delete Flagged</button>
           <span id="sel-info" class="muted"></span>
         </div>
@@ -133,6 +134,7 @@
         </label>
         <label class="wide">API key <span class="muted">(stored unencrypted in this app's local data; sent only to the provider)</span>
           <input id="llm-key" type="password" spellcheck="false" autocomplete="off" />
+          <button type="button" id="llm-key-link" class="linkish key-link hidden" title="Open the provider's page to create an API key"></button>
         </label>
         <label class="wide">Endpoint URL
           <input id="llm-url" type="text" spellcheck="false" />
@@ -197,6 +199,29 @@
       <menu>
         <button value="cancel" type="submit">Cancel</button>
         <button value="ok" type="submit" class="primary">OK</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="dedup-dialog">
+    <form method="dialog">
+      <h2>Remove duplicate coordinates</h2>
+      <p class="muted dedup-intro">
+        Rows that share the same coordinates are collapsed to their first occurrence.
+        Use the options below to narrow what counts as a duplicate.
+      </p>
+      <fieldset class="dedup-opts">
+        <label title="Two rows only count as duplicates when columns 1 and 2 match as well as the coordinates">
+          <input type="checkbox" id="dedup-samecols" /> <span id="dedup-samecols-label">Only when columns 1 &amp; 2 also match</span>
+        </label>
+        <label title="Only collapse duplicates that come from the same source PDF; identical coordinates in different PDFs are kept">
+          <input type="checkbox" id="dedup-samepdf" /> Only within the same PDF
+        </label>
+      </fieldset>
+      <div id="dedup-status" class="muted"></div>
+      <menu>
+        <button value="cancel" type="submit">Cancel</button>
+        <button type="button" id="dedup-run" class="primary">Remove Duplicates</button>
       </menu>
     </form>
   </dialog>
