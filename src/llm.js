@@ -15,6 +15,8 @@
 // July 2026 — refresh these when providers rotate their line-ups (several older
 // defaults, e.g. DeepSeek's deepseek-chat, Gemini's gemini-2.0-flash, Kimi's
 // kimi-latest and GLM's glm-4-flash, have since been retired or deprecated).
+// `keyUrl`/`keyName` point the user at the page where they can obtain an API
+// key for that provider (surfaced as a link next to the key field in the UI).
 export const PROVIDERS = {
   anthropic: {
     label: 'Anthropic (Claude)',
@@ -23,6 +25,8 @@ export const PROVIDERS = {
     model: 'claude-opus-4-8',
     models: ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-fable-5'],
     keyHint: 'sk-ant-…',
+    keyUrl: 'https://console.anthropic.com/settings/keys',
+    keyName: 'Anthropic Console',
   },
   openai: {
     label: 'OpenAI (GPT)',
@@ -31,6 +35,8 @@ export const PROVIDERS = {
     model: 'gpt-5.1',
     models: ['gpt-5.1', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1'],
     keyHint: 'sk-…',
+    keyUrl: 'https://platform.openai.com/api-keys',
+    keyName: 'OpenAI Platform',
   },
   gemini: {
     label: 'Google (Gemini)',
@@ -39,6 +45,8 @@ export const PROVIDERS = {
     model: 'gemini-2.5-flash',
     models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.5-flash', 'gemini-flash-latest'],
     keyHint: 'AIza…',
+    keyUrl: 'https://aistudio.google.com/app/apikey',
+    keyName: 'Google AI Studio',
   },
   deepseek: {
     label: 'DeepSeek',
@@ -47,6 +55,8 @@ export const PROVIDERS = {
     model: 'deepseek-v4-flash',
     models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
     keyHint: 'sk-…',
+    keyUrl: 'https://platform.deepseek.com/api_keys',
+    keyName: 'DeepSeek Platform',
   },
   qwen: {
     label: 'Qwen (Alibaba DashScope)',
@@ -55,6 +65,8 @@ export const PROVIDERS = {
     model: 'qwen-plus',
     models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen3-max'],
     keyHint: 'sk-…',
+    keyUrl: 'https://dashscope.console.aliyun.com/apiKey',
+    keyName: 'Alibaba Cloud DashScope',
   },
   kimi: {
     label: 'Kimi (Moonshot)',
@@ -63,6 +75,8 @@ export const PROVIDERS = {
     model: 'kimi-k2.6',
     models: ['kimi-k2.6', 'kimi-k2.5', 'kimi-k2.7-code', 'moonshot-v1-128k', 'moonshot-v1-32k'],
     keyHint: 'sk-…',
+    keyUrl: 'https://platform.moonshot.cn/console/api-keys',
+    keyName: 'Moonshot Platform',
   },
   zhipu: {
     label: 'GLM (Zhipu / BigModel)',
@@ -71,6 +85,8 @@ export const PROVIDERS = {
     model: 'glm-4.6',
     models: ['glm-4.6', 'glm-4.7', 'glm-4.5', 'glm-4.5-air', 'glm-4-flash'],
     keyHint: '…',
+    keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
+    keyName: 'Zhipu BigModel',
   },
   custom: {
     label: 'Custom (OpenAI-compatible)',
@@ -79,6 +95,8 @@ export const PROVIDERS = {
     model: '',
     models: [],
     keyHint: 'optional for local endpoints',
+    keyUrl: '',
+    keyName: '',
   },
 };
 
