@@ -1,8 +1,6 @@
-// CoordRippr PDF output: a minimal PDF writer that wraps one JPEG image per
-// page — used to save "highlighted" copies of scanned PDFs (each page is
-// rendered to a canvas with its detection highlights baked in, encoded as
-// JPEG, and embedded here). Pure module — no DOM, no Electron — so it runs
-// under node --test.
+// CoordRippr PDF output: minimal PDF writer wrapping one JPEG per page — saves
+// "highlighted" copies of scanned PDFs (each page rendered to canvas with
+// highlights baked in, JPEG-encoded, embedded here). Pure module (node --test).
 
 const enc = new TextEncoder();
 

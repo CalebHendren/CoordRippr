@@ -1,7 +1,8 @@
 {
   "name": "coordrippr",
   "productName": "CoordRippr",
-  "version": "0.3.6",
+  "//version": "Bumping by 0.1 goes to 0.x.0 (minor +1, patch reset to 0); bumping by 0.0.1 goes to 0.0.x (patch +1).",
+  "version": "0.4.0",
   "description": "Extract coordinate data from PDFs into clean CSV",
   "main": "main.js",
   "type": "module",
@@ -15,6 +16,7 @@
   "engines": {
     "node": ">=20"
   },
+  "//scripts": "Run `npm install` first — needs network to download Electron and pdfjs-dist. start: launch the app. test: node --test (pure-module tests need nothing extra; pdf-extract.test.js also needs pdfjs-dist installed). web: build the browser version into dist-web/. dist: package installers.",
   "scripts": {
     "start": "electron .",
     "test": "node --test",

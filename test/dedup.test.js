@@ -1,3 +1,5 @@
+// Tests for src/dedup.js (duplicate-coordinate detection). No need to run
+// unless you changed dedup.js. Prereq: `npm install`. Run: `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { findDuplicateRowIds, hasCoordinate } from '../src/dedup.js';

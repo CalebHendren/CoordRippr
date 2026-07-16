@@ -1,3 +1,5 @@
+// Tests for src/persist.js (packState/unpackState snapshot round-trip). No need
+// to run unless you changed persist.js. Prereq: `npm install`. Run: `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { packState, unpackState, SNAPSHOT_VERSION } from '../src/persist.js';
