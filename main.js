@@ -1,3 +1,5 @@
+// CoordRippr Electron main process (`npm start`). Prereq: `npm install` — needs
+// network to download Electron. Renderer/UI code lives in src/.
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';

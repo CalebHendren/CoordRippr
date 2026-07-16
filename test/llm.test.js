@@ -1,3 +1,6 @@
+// Tests for src/llm.js (providers, request/response wire formats, prompt
+// building, chunking, runPool). No need to run unless you changed llm.js.
+// Prereq: `npm install`. Run: `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {

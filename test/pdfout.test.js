@@ -1,3 +1,5 @@
+// Tests for src/pdfout.js (image-PDF container writer). No need to run unless
+// you changed pdfout.js. Prereq: `npm install`. Run: `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildImagePdf } from '../src/pdfout.js';

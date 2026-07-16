@@ -1,11 +1,8 @@
-// CoordRippr coordinate parsing / cleaning / formatting.
-// Pure module: no DOM, no Electron. Used by the renderer and by node --test.
-//
-// Design: one deliberately wide regex finds *candidate* tokens (anything that
-// remotely resembles a coordinate), then parseToken() decides what the pieces
-// mean and pairTokens() assembles lat/lon pairs. False positives are tolerated
-// by design — the user can delete rows — but bare numbers only survive when
-// they pair up into a plausible lat/lon couple.
+// CoordRippr coordinate parsing / cleaning / formatting. Pure module (no DOM,
+// no Electron); used by the renderer and node --test. A wide regex finds
+// candidate tokens, parseToken() interprets them, pairTokens() assembles
+// lat/lon pairs. False positives are tolerated (user deletes rows); bare
+// numbers survive only when they pair into a plausible lat/lon couple.
 
 // ---------------------------------------------------------------------------
 // Character classes. PDFs are sloppy: any of these can stand in for °, ' , ".
@@ -52,8 +49,7 @@ const HEMI_MAP = {
 };
 
 // ---------------------------------------------------------------------------
-// Intensity: how wide the detection net is cast (1 = strict … 5 = everything).
-// Level 3 is the historical default behaviour.
+// Intensity: detection-net width (1 = strict … 5 = everything; 3 = default).
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_INTENSITY = 3;
@@ -91,10 +87,9 @@ function num(str) {
 // ---------------------------------------------------------------------------
 
 /**
- * Interpret one regex match. Returns null when the match is just a number
- * with no coordinate-ish evidence at all (those may still be used later by
- * the bare-decimal-pair rule, so we return a "weak" token instead of null
- * when the number merely *could* be a decimal degree).
+ * Interpret one regex match. null when the match is a number with no
+ * coordinate evidence — but a possible decimal degree returns a "weak" token
+ * instead (used later by the bare-decimal-pair rule).
  */
 function parseToken(m, text, rules) {
   const g = m.groups;
@@ -165,9 +160,8 @@ function parseToken(m, text, rules) {
   if (axis === 'lat' && Math.abs(dd) > 90) return null;
 
   const isDMS = min != null;
-  // Strong tokens stand on their own. Weak tokens are bare numbers that only
-  // count if they pair up with a partner. Bare integers only exist at the
-  // highest intensity, and even then only ever as one half of a pair.
+  // strong = stands alone; weak = bare number, counts only if paired; bare =
+  // integer, only at highest intensity and only as half a pair.
   let strength;
   if (evidence >= 2) strength = 'strong';
   else if (evidence === 1 && (degHasFraction || isDMS)) strength = 'medium';
@@ -282,14 +276,11 @@ export function extractCoordinates(text, intensity = DEFAULT_INTENSITY) {
 export const CROSS_PAGE_WINDOW = 240;
 
 /**
- * Find coordinate pairs that straddle the boundary between two consecutive
- * pages (latitude at the bottom of one page, longitude at the top of the
- * next — or a single token broken by the page break). Pairs that live
- * entirely on one page are ignored: the per-page scan already has those.
- *
- * Each returned token additionally carries `segs`: the character ranges it
- * occupies, in each page's own text coordinates:
- *   [{page: 'prev'|'next', start, end}, …]
+ * Coordinate pairs straddling the boundary between two consecutive pages (lat
+ * at the bottom of one, lon at the top of the next, or a token split by the
+ * break). Single-page pairs are ignored (the per-page scan has those).
+ * Each returned token carries `segs`: its char ranges in each page's own text,
+ * [{page: 'prev'|'next', start, end}, …].
  */
 export function extractCrossPage(prevText, nextText, intensity = DEFAULT_INTENSITY, window = CROSS_PAGE_WINDOW) {
   const tailStart = Math.max(0, prevText.length - window);

@@ -1,7 +1,6 @@
 // CoordRippr LLM assist: provider presets, request building, response parsing,
-// prompt construction and work chunking. Pure module — no DOM, no Electron —
-// so it runs under node --test. The actual HTTP call happens elsewhere
-// (Electron main process, or browser fetch in the web build).
+// prompt construction, work chunking. Pure module (node --test); the HTTP call
+// happens elsewhere (Electron main, or browser fetch in the web build).
 
 // ---------------------------------------------------------------------------
 // Providers. Everything speaks either the Anthropic Messages API or the
@@ -9,14 +8,10 @@
 // the Chinese providers, expose).
 // ---------------------------------------------------------------------------
 
-// Each provider ships a short curated list of current model IDs for the model
-// dropdown. `model` is the default (must be one of `models`); users can always
-// pick "Custom…" and type any other ID. Model names were verified current as of
-// July 2026 — refresh these when providers rotate their line-ups (several older
-// defaults, e.g. DeepSeek's deepseek-chat, Gemini's gemini-2.0-flash, Kimi's
-// kimi-latest and GLM's glm-4-flash, have since been retired or deprecated).
-// `keyUrl`/`keyName` point the user at the page where they can obtain an API
-// key for that provider (surfaced as a link next to the key field in the UI).
+// Each provider ships a curated list of current model IDs for the dropdown.
+// `model` is the default (one of `models`); "Custom…" lets users type any ID.
+// Models verified current July 2026 — refresh when providers rotate line-ups.
+// `keyUrl`/`keyName` point at the provider's API-key page (linked in the UI).
 export const PROVIDERS = {
   anthropic: {
     label: 'Anthropic (Claude)',
@@ -105,9 +100,9 @@ export const PROVIDERS = {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a ready-to-send HTTP request for one chat turn.
- * `browser` adds the CORS opt-in header Anthropic requires for direct
- * browser calls (used by the GitHub Pages build; Electron proxies via main).
+ * Ready-to-send HTTP request for one chat turn. `browser` adds the CORS opt-in
+ * header Anthropic requires for direct browser calls (GitHub Pages build;
+ * Electron proxies via main).
  */
 export function buildRequest({ kind, url, model, apiKey, system, user, maxTokens = 4096, browser = false }) {
   if (!url) throw new Error('No endpoint URL configured');
@@ -176,8 +171,8 @@ export function extractText(kind, responseText) {
 }
 
 /**
- * Robustly extract a JSON array of row results from LLM output that may be
- * wrapped in code fences or prose. Returns [] when nothing parseable exists.
+ * Extract a JSON array of row results from LLM output that may be wrapped in
+ * code fences or prose. [] when nothing parseable exists.
  */
 export function parseResultsJson(text) {
   if (!text) return [];
@@ -234,11 +229,9 @@ export function normalizeResult(r, colCount = 2) {
     cols,
     notesCol: typeof r.notes_col === 'string' ? r.notes_col.trim().slice(0, 800) : '',
     note: typeof r.note === 'string' ? r.note.trim().slice(0, 400) : '',
-    // Only a literal true marks a row for deletion — anything else is "keep".
+    // Only a literal true counts (delete / resend-with-prev / resend-with-next).
     del: r.delete === true,
-    // Only a literal true counts as "please resend with the previous page".
     needPrev: r.need_prev === true,
-    // Only a literal true counts as "please resend with the next page".
     needNext: r.need_next === true,
   };
   return out.row ? out : null;
@@ -431,31 +424,25 @@ export function chunkPerPage(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
 // Bounded-concurrency runner: send several requests at once
 // ---------------------------------------------------------------------------
 
-// How many requests may be in flight at once by default, and the ceiling the
-// UI exposes. Kept modest so a big per-page fan-out doesn't trip provider rate
-// limits; 1 reproduces the old strictly-sequential behaviour.
+// Default in-flight request count and the UI ceiling. Modest so a big per-page
+// fan-out doesn't trip rate limits; 1 = the old strictly-sequential path.
 export const DEFAULT_CONCURRENCY = 4;
 export const MAX_CONCURRENCY = 8;
 
 /**
- * Run `worker(item, index)` over `items` with at most `limit` calls in flight
- * at once (a fixed-size pool of runners pulling from a shared cursor). Results
- * are returned in the ORIGINAL item order regardless of completion order, so a
- * caller can rely on positions even though the work overlaps.
+ * Run `worker(item, index)` over `items`, at most `limit` in flight (fixed-size
+ * pool over a shared cursor). Results come back in ORIGINAL item order.
  *
- * Because JavaScript is single-threaded, each worker runs to its next `await`
- * without interruption — so a worker that mutates shared state synchronously
- * after its own `await` (e.g. applying a parsed response) can never interleave
- * with another. That is what makes it safe to apply LLM results from inside the
- * pool.
+ * Safe to mutate shared state (e.g. apply LLM results) from inside a worker: JS
+ * is single-threaded, so each runs to its next `await` uninterrupted and the
+ * sync work after `await` can't interleave with another worker.
  *
- * `shouldStop()`, when provided, is polled before each item is picked up; once
- * it returns true no new items are started (in-flight ones still finish) and
- * their result slots stay `undefined`. This preserves the app's "stop after the
- * current request" / auth-failure short-circuit semantics.
+ * `shouldStop()` is polled before each item; once true, no new items start
+ * (in-flight ones finish; their slots stay undefined) — this preserves the
+ * "stop after current request" / auth-failure short-circuit.
  *
  * @param {Array} items
- * @param {number} limit           max concurrent workers (coerced to >= 1)
+ * @param {number} limit  max concurrent workers (coerced to >= 1)
  * @param {(item, index) => Promise} worker
  * @param {() => boolean} [shouldStop]
  * @returns {Promise<Array>} results in item order

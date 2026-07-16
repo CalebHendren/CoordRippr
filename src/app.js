@@ -137,9 +137,8 @@ async function loadFiles(specs) {
   persistSoon();
 }
 
-// One page's detections: per-page pairs, then pairs straddling the boundary
-// with the previous page. `reuse` (rescan only) maps location keys to old
-// rows so user edits survive an intensity change.
+// One page's detections: per-page pairs + pairs straddling the previous-page
+// boundary. `reuse` (rescan) maps location keys to old rows so edits survive.
 function scanPage(file, ctx, prevCtx, reuse = null) {
   for (const pair of extractCoordinates(ctx.text, state.intensity)) {
     addDetectedRow(file, ctx, pair, reuse);
@@ -209,9 +208,8 @@ function findDetAt(fileId, pageNum, start, end) {
 function addCrossPageRow(file, prevCtx, curCtx, pair, reuse = null) {
   const ctxFor = (seg) => (seg.page === 'prev' ? prevCtx : curCtx);
 
-  // The per-page scan may already know these tokens (kept as lone strong
-  // half-pairs). A token already sitting in a *full* pair means this
-  // cross-page candidate is redundant.
+  // The per-page scan may already hold these tokens as lone strong half-pairs.
+  // A token already in a *full* pair makes this cross-page candidate redundant.
   const existing = [];
   for (const tok of [pair.lat, pair.lon]) {
     const seg = tok.segs[0];
@@ -273,9 +271,8 @@ function addCrossPageRow(file, prevCtx, curCtx, pair, reuse = null) {
   state.rows.push(row);
 }
 
-// Remove rows (and their detections) from state. No rendering here — callers
-// re-render. With suppress (default), the detection locations are remembered
-// so re-scans don't resurrect deleted rows.
+// Remove rows (and detections) from state; callers re-render. With suppress
+// (default), detection locations are remembered so re-scans don't resurrect them.
 function removeRows(ids, { suppress = true } = {}) {
   for (const row of state.rows) {
     if (!ids.has(row.id) || !row.src) continue;
@@ -808,9 +805,8 @@ tbodyEl.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------------------------
-// Excel-style drag-to-fill: focus a cell, then drag the little handle at its
-// bottom-right corner down (or up) to copy that value into every cell it
-// sweeps over. Works for the data columns, the coordinate columns and Notes.
+// Excel-style drag-to-fill: drag the handle at a focused cell's bottom-right
+// to copy its value over every cell swept. Works for data/coord/Notes columns.
 // ---------------------------------------------------------------------------
 
 const csvScroll = $('#csv-scroll');
@@ -1434,9 +1430,8 @@ function syncLlmProviderFields() {
   }
 }
 
-// Fill the model dropdown from the provider's preset list plus a "Custom…"
-// entry. Selects the current model if it's a known preset, otherwise falls
-// back to Custom and reveals the free-text field (which holds the actual value).
+// Fill the model dropdown from the provider's presets plus "Custom…". Picks the
+// current model if it's a preset, else Custom + reveals the free-text field.
 function populateModelSelect(p, model) {
   const sel = $('#llm-model-select');
   const models = p.models || [];
@@ -1526,9 +1521,8 @@ function syncNotesState() {
   $('#llm-notes-spec').disabled = !$('#llm-notes').checked;
 }
 
-// Rebuild the LLM dialog's PDF checkbox list. Choices made earlier in the
-// session are kept; files seen for the first time default to checked (all
-// PDFs are sent unless the user opts out). Files without rows can't be sent.
+// Rebuild the LLM dialog's PDF checkbox list. Earlier choices are kept; new
+// files default to checked (all sent unless opted out). Rowless files can't be sent.
 function renderLlmFileList() {
   const box = $('#llm-files');
   const prev = new Map();
@@ -1635,9 +1629,8 @@ function collectLlmSettings() {
   return s;
 }
 
-// Rows grouped per file, with the page numbers to send along. Only files the
-// user ticked are included; with unsentOnly, rows an LLM already answered are
-// skipped (and counted, for the status line).
+// Rows grouped per file with the page numbers to send. Only ticked files; with
+// unsentOnly, rows an LLM already answered are skipped (and counted for status).
 function buildLlmWork({ scope, files, unsentOnly }) {
   const work = [];
   let skippedSent = 0;
@@ -1761,10 +1754,9 @@ $('#llm-run').addEventListener('click', async () => {
     renderTable();
   }
 
-  // Per-page batching and adjacent-page requests only make sense when we're
-  // NOT already sending the whole PDF. Page flips let the model pull in the
-  // page before/after a row to finish the data columns (FILL) or anything the
-  // user's "Add to the prompt" instructions ask for.
+  // Per-page batching and adjacent-page requests only apply when NOT sending
+  // the whole PDF. Page flips let the model pull the page before/after a row to
+  // finish FILL columns or anything the "Add to the prompt" instructions ask.
   const perPage = s.perPage && s.scope !== 'all';
   const hasExtra = !!(s.extra && s.extra.trim());
   const allowPrev = (s.fill || hasExtra) && s.scope !== 'all';
@@ -1781,10 +1773,9 @@ $('#llm-run').addEventListener('click', async () => {
   const nextRows = new Set(); // rows that got a next-page retry
   let stopped = false; // hard stop (auth failure)
 
-  // Every row that went out in a parsed request. A row only really counts as
-  // "processed by the LLM" once it comes back with a badge — a ✓/⚠/? verdict or
-  // a 🗑 flag. Rows the model silently drops (no badge) are re-sent below until
-  // they are badged, and never marked as sent, so a re-run picks them up too.
+  // A row counts as "processed by the LLM" only once it comes back badged (a
+  // ✓/⚠/? verdict or 🗑 flag). Rows the model silently drops are re-sent below
+  // until badged, and never marked sent, so a re-run picks them up too.
   const MAX_BADGE_RETRIES = 2;
   const sentRowIds = new Set();
   const hasBadge = (id) => {
@@ -2116,10 +2107,9 @@ function syncControls() {
   syncIntensityUi();
 }
 
-// Reattach a pdf.js document to a restored file: prefer re-reading from its
-// path (Electron), fall back to the bytes stored at load time (web, drag &
-// drop). Rows and highlights survive either way; only page rendering needs
-// the document.
+// Reattach a pdf.js document to a restored file: re-read from its path
+// (Electron), else the bytes stored at load time (web, drag & drop). Only page
+// rendering needs the document; rows and highlights survive either way.
 async function reattachFile(file) {
   if (file.error) return;
   try {

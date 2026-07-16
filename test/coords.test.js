@@ -1,3 +1,5 @@
+// Tests for src/coords.js (tokenizer/parser/formatter/cross-page). No need to
+// run unless you changed coords.js. Prereq: `npm install`. Run: `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {

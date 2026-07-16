@@ -1,3 +1,5 @@
+// Tests for src/updates.js (version parsing / update-due logic). No need to run
+// unless you changed updates.js. Prereq: `npm install`. Run: `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseVersion, isNewer, isDue, CHECK_INTERVAL_MS } from '../src/updates.js';
