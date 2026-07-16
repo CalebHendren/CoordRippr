@@ -1,7 +1,7 @@
 {
   "name": "coordrippr",
   "productName": "CoordRippr",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Extract coordinate data from PDFs into clean CSV",
   "main": "main.js",
   "type": "module",
