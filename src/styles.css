@@ -222,7 +222,27 @@ dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 8px 0 
 .llm-badge.del { background: rgba(248, 113, 113, 0.18); color: var(--danger); cursor: pointer; }
 .llm-grid label.danger-opt { color: var(--danger); margin-left: 18px; }
 
+/* ---------- LLM API-key link ---------- */
+button.key-link {
+  align-self: flex-start; margin-top: 2px; text-align: left;
+  color: var(--accent);
+}
+button.key-link:hover { color: #7dd3fc; }
+
 /* ---------- name dialog ---------- */
 #name-dialog { width: min(360px, 92vw); }
 #name-dialog h2 { margin: 0 0 10px; font-size: 15px; }
 #name-input { width: 100%; }
+
+/* ---------- de-duplication dialog ---------- */
+#dedup-dialog { width: min(460px, 92vw); }
+#dedup-dialog h2 { margin: 0 0 8px; font-size: 15px; }
+#dedup-dialog .dedup-intro { margin: 0 0 12px; line-height: 1.5; }
+#dedup-dialog fieldset.dedup-opts {
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 8px; margin: 0;
+}
+#dedup-dialog fieldset.dedup-opts label {
+  display: flex; align-items: center; gap: 6px;
+}
+#dedup-status { margin: 12px 0 2px; min-height: 18px; }
