@@ -227,7 +227,33 @@ dialog h2 { margin: 0 0 10px; font-size: 16px; }
 #llm-files .llm-file input:disabled ~ .fname { color: var(--muted); }
 .llm-files-tools { display: flex; gap: 10px; align-self: flex-start; }
 #llm-status { margin: 10px 0 4px; min-height: 18px; white-space: pre-wrap; user-select: text; }
+.llm-close-hint { margin: 2px 0 0; font-size: 11px; line-height: 1.4; }
 dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 8px 0 0; padding: 0; }
+
+/* ---------- LLM retry-with-a-different-model section ---------- */
+#llm-retry-fs { flex-direction: column; align-items: stretch; gap: 8px; }
+.retry-config {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px;
+  border-top: 1px dashed var(--border); padding-top: 8px; margin-top: 2px;
+}
+.retry-config label { display: flex; flex-direction: column; gap: 3px; }
+.retry-config label.wide { grid-column: 1 / -1; }
+.retry-config label.retry-secondkey { flex-direction: row; align-items: center; gap: 6px; color: var(--muted); }
+.retry-config input[type="text"], .retry-config input[type="password"], .retry-config select {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px; font: inherit;
+}
+
+/* ---------- LLM prompt preview ---------- */
+#llm-preview-dialog { width: min(760px, 94vw); }
+#llm-preview-dialog h2 { margin: 0 0 6px; font-size: 15px; }
+#llm-preview-dialog p { margin: 0 0 10px; line-height: 1.5; }
+#llm-preview-dialog .preview-section h3 { margin: 10px 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
+#llm-preview-dialog pre {
+  margin: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; max-height: 34vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font: 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; color: var(--text); user-select: text;
+}
 
 /* ---------- LLM verdict badges ---------- */
 .llm-badge {

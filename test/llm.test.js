@@ -10,6 +10,7 @@ import {
   parseResultsJson,
   normalizeResult,
   buildPrompt,
+  oneWord,
   chunkWork,
   chunkPerPage,
   runPool,
@@ -237,6 +238,50 @@ test('buildPrompt offers need_next whenever allowNext is on (independent of fill
     verify: false, fill: true, allowNext: false,
   });
   assert.doesNotMatch(off.system, /"need_next"/);
+});
+
+test('oneWord keeps only the first token', () => {
+  assert.equal(oneWord('Panthera leo'), 'Panthera');
+  assert.equal(oneWord('  leo  '), 'leo');
+  assert.equal(oneWord('leo (Linnaeus, 1758)'), 'leo');
+  assert.equal(oneWord(''), '');
+  assert.equal(oneWord(null), '');
+  assert.equal(oneWord(undefined), '');
+});
+
+test('buildPrompt adds Genus/Species tasks that enforce one word', () => {
+  const { system } = buildPrompt({
+    rows: [], pages: [], cols: ['Genus', 'Species'], extra: '',
+    verify: false, fill: false, genus: true, species: true,
+  });
+  assert.match(system, /EXTRACT GENUS into "col1"/);
+  assert.match(system, /EXTRACT SPECIES into "col2"/);
+  assert.match(system, /ALWAYS a single word/);
+  // The column keys still appear in the response schema.
+  assert.match(system, /"col1"/);
+  assert.match(system, /"col2"/);
+});
+
+test('buildPrompt omits Genus/Species tasks when their toggles are off', () => {
+  const { system } = buildPrompt({
+    rows: [], pages: [], cols: ['Genus', 'Species'], extra: '',
+    verify: true, fill: false,
+  });
+  assert.doesNotMatch(system, /EXTRACT GENUS/);
+  assert.doesNotMatch(system, /EXTRACT SPECIES/);
+});
+
+test('buildPrompt FILL skips columns already handled by Genus/Species', () => {
+  const { system } = buildPrompt({
+    rows: [], pages: [], cols: ['Genus', 'Species', 'Habitat'], extra: '',
+    verify: false, fill: true, genus: true, species: true,
+  });
+  // Dedicated tasks own col1/col2; FILL only covers the remaining column.
+  assert.match(system, /EXTRACT GENUS/);
+  assert.match(system, /EXTRACT SPECIES/);
+  assert.match(system, /FILL "col3"/);
+  assert.doesNotMatch(system, /FILL "col1"/);
+  assert.match(system, /olumn 3 is named "Habitat"/);
 });
 
 test('buildPrompt adds the NOTES task with the user spec', () => {
