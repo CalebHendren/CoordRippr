@@ -69,12 +69,17 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     (enforced in the prompt and again on the result), so `"Panthera leo"`
     returned for the genus is trimmed to `Panthera`. A separate **Fill the other
     data columns** option covers any additional columns you add.
-  - **Retry with a different model** — after the first model finishes, rows it
-    could not verify/badge (or whose Genus/Species/filled columns are still
-    empty) are automatically re-sent to a second model — e.g.
-    `deepseek-v4-flash` first, then `deepseek-v4-pro` or Claude. A retry on the
-    **same provider** reuses the primary API key unless a *separate key* box is
-    ticked; a retry on a **different provider** uses its own key.
+  - **Second model** — a separate provider/model/key used by two features:
+    - *Retry unfinished rows* — after the first model finishes, rows it could
+      not verify/badge (or whose Genus/Species/filled columns are still empty)
+      are automatically re-sent — e.g. `deepseek-v4-flash` first, then
+      `deepseek-v4-pro` or Claude.
+    - *Delete confirmation* — the second-model review described under
+      false-positive flagging below.
+
+    A second model on the **same provider** reuses the primary API key unless a
+    *separate key* box is ticked; on a **different provider** it uses its own
+    key. The settings only appear once one of the two features is enabled.
   - **Preview prompt** — shows the exact system and user messages that will be
     sent (built from the current settings and your first page of rows) before
     anything leaves your machine.
@@ -94,14 +99,21 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     until they come back badged.
   - False-positive flagging: optionally flags rows that are not coordinates
     (dates, measurements, page numbers, etc.) with a 🗑 marker for one-by-one or
-    bulk removal (*Delete Flagged*). An opt-in automatic-deletion mode removes
-    flagged rows without confirmation; it resets each run and requires
-    confirmation before starting.
+    bulk removal (*Delete Flagged*). Two opt-in follow-ups (mutually exclusive,
+    each reset per run and confirmed before starting):
+    - **Automatic deletion** removes flagged rows without confirmation
+      (*dangerous*).
+    - **Two-model deletion** — the first model only flags; the second model
+      reviews each flag and a row is deleted only if it also rejects it. Rows the
+      second model does not confirm keep their 🗑 flag for manual review. Safer
+      than single-model auto-delete, but still risky (the models can share a
+      blind spot), not necessarily more accurate or efficient, and it costs extra
+      (flagged rows are sent to a second model).
   - Optional LLM-filled **Notes** column with a free-text description of what the
     notes should contain.
   - LLM output is not authoritative. Verify all results against the source PDFs.
 
-  ![The LLM Assist dialog showing the Genus and Species extraction toggles and the "Retry with a different model" section, configured to verify with DeepSeek and retry unfinished rows with Claude](docs/llm-assist.png)
+  ![The LLM Assist dialog showing the Genus and Species extraction toggles, the two-model delete-confirmation option with its risk note, and the second-model section, configured to run DeepSeek first and use Claude for retries and delete confirmation](docs/llm-assist.png)
 - **Update check** — Compares the running version against the latest GitHub
   release daily, and via a *Check for updates* button in the footer. Nothing is
   downloaded automatically.

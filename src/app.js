@@ -1474,8 +1474,11 @@ function setKeyLink(link, p) {
 // the primary API key when it targets the same provider (unless a separate key
 // is requested); a different provider always needs its own key.
 function syncRetryFields() {
-  const on = $('#llm-retry').checked;
+  // The second-model settings appear when any second-model feature is on:
+  // "Retry unfinished rows" or "delete only when a second model agrees".
+  const on = $('#llm-retry').checked || $('#llm-confirmdel').checked;
   $('#llm-retry-config').classList.toggle('hidden', !on);
+  $('#llm-retry-hint').classList.toggle('hidden', on);
   if (!on) return;
   const prefs = llmPrefs();
   const primaryId = $('#llm-provider').value;
@@ -1534,10 +1537,19 @@ function initLlmDialog() {
   if (prefs.retry != null) $('#llm-retry').checked = prefs.retry;
   if (prefs.retryProvider && PROVIDERS[prefs.retryProvider]) $('#llm-retry-provider').value = prefs.retryProvider;
   if (prefs.retrySecondKey != null) $('#llm-retry-secondkey').checked = prefs.retrySecondKey;
-  // Auto-delete is deliberately NOT restored from prefs: it's dangerous, so
-  // it must be opted into per run.
-  syncAutoDelState();
-  $('#llm-flagdel').addEventListener('change', syncAutoDelState);
+  // The deletion follow-ups (auto-delete, second-model confirmation) are
+  // deliberately NOT restored from prefs: both delete rows, so they must be
+  // opted into per run.
+  syncDeleteOpts();
+  $('#llm-flagdel').addEventListener('change', syncDeleteOpts);
+  $('#llm-autodel').addEventListener('change', (e) => {
+    if (e.currentTarget.checked) $('#llm-confirmdel').checked = false; // mutually exclusive
+    syncDeleteOpts();
+  });
+  $('#llm-confirmdel').addEventListener('change', (e) => {
+    if (e.currentTarget.checked) $('#llm-autodel').checked = false; // mutually exclusive
+    syncDeleteOpts();
+  });
   syncPerPageState();
   for (const radio of document.querySelectorAll('input[name="llm-scope"]')) {
     radio.addEventListener('change', syncPerPageState);
@@ -1563,11 +1575,17 @@ function initLlmDialog() {
   $('#llm-preview').addEventListener('click', previewLlmPrompt);
 }
 
-function syncAutoDelState() {
+// The two follow-ups to flagging (immediate auto-delete, or second-model
+// confirmation) both need flagging on, and are mutually exclusive.
+function syncDeleteOpts() {
   const flag = $('#llm-flagdel').checked;
   const auto = $('#llm-autodel');
-  if (!flag) auto.checked = false;
+  const confirm = $('#llm-confirmdel');
+  if (!flag) { auto.checked = false; confirm.checked = false; }
   auto.disabled = !flag;
+  confirm.disabled = !flag;
+  // Checking the second-model delete option reveals the second-model settings.
+  syncRetryFields();
 }
 
 // Per-page batching only applies when we're NOT sending the whole PDF.
@@ -1674,26 +1692,31 @@ function collectLlmSettings() {
     species: $('#llm-species').checked,
     fill: $('#llm-fill').checked,
     overwrite: $('#llm-overwrite').checked,
+    // Second-model delete confirmation implies flagging (model 1 must flag
+    // before model 2 can confirm), and is exclusive with immediate auto-delete.
+    confirmDelete: $('#llm-flagdel').checked && $('#llm-confirmdel').checked,
     flagDelete: $('#llm-flagdel').checked,
-    autoDelete: $('#llm-flagdel').checked && $('#llm-autodel').checked,
+    autoDelete: $('#llm-flagdel').checked && $('#llm-autodel').checked && !$('#llm-confirmdel').checked,
     notes: $('#llm-notes').checked,
     notesSpec: $('#llm-notes-spec').value,
   };
 
-  // Retry-with-a-different-model settings. When the retry targets the same
-  // provider and no separate key is requested, it reuses the primary key;
-  // otherwise it uses its own (a second key, or the other provider's key).
-  const retryOn = $('#llm-retry').checked;
+  // Second-model settings, shared by "retry unfinished rows" and "delete only
+  // when a second model agrees". When the second model is the same provider and
+  // no separate key is requested it reuses the primary key; otherwise it uses
+  // its own (a second key, or the other provider's key).
   const retryId = $('#llm-retry-provider').value;
   const retrySameProvider = retryId === id;
   const retrySecondKey = $('#llm-retry-secondkey').checked;
   const retrySeparateKey = !retrySameProvider || retrySecondKey;
-  s.retry = retryOn;
+  s.retry = $('#llm-retry').checked;
   s.retryProvider = retryId;
   s.retryKind = PROVIDERS[retryId].kind;
   s.retryModel = $('#llm-retry-model').value.trim();
   s.retryUrl = $('#llm-retry-url').value.trim();
   s.retryKey = retrySeparateKey ? $('#llm-retry-key').value.trim() : s.key;
+  // Any feature that engages the second model.
+  s.useSecondModel = s.retry || s.confirmDelete;
 
   const prefs = llmPrefs();
   prefs.provider = id;
@@ -1862,10 +1885,11 @@ $('#llm-run').addEventListener('click', async () => {
   if (!s.model) return llmStatus('Enter a model name.');
   if (!s.key && s.provider !== 'custom') return llmStatus('Enter your API key.');
   if (!s.verify && !s.fill && !s.genus && !s.species && !s.flagDelete && !s.notes) return llmStatus('Pick at least one task.');
-  if (s.retry) {
-    if (!s.retryUrl) return llmStatus('Enter the retry model’s endpoint URL (or turn retry off).');
-    if (!s.retryModel) return llmStatus('Enter the retry model’s name (or turn retry off).');
-    if (!s.retryKey && s.retryProvider !== 'custom') return llmStatus('Enter the retry model’s API key (or turn retry off).');
+  if (s.useSecondModel) {
+    const why = s.retry && s.confirmDelete ? 'second model' : s.retry ? 'retry model' : 'delete-confirmation model';
+    if (!s.retryUrl) return llmStatus(`Enter the ${why}’s endpoint URL (or turn its option off).`);
+    if (!s.retryModel) return llmStatus(`Enter the ${why}’s name (or turn its option off).`);
+    if (!s.retryKey && s.retryProvider !== 'custom') return llmStatus(`Enter the ${why}’s API key (or turn its option off).`);
   }
   if (s.autoDelete) {
     const sure = confirm(
@@ -1874,6 +1898,17 @@ $('#llm-run').addEventListener('click', async () => {
       'LLMs make mistakes — real coordinates can be lost. Continue?'
     );
     if (!sure) return llmStatus('Cancelled — automatic deletion not confirmed.');
+  }
+  if (s.confirmDelete) {
+    const sure = confirm(
+      `Two-model deletion is enabled: model 1 flags suspected false positives, then the ` +
+      `second model (${s.retryModel}) reviews each flag and any row it also rejects is DELETED ` +
+      `without asking you per row.\n\n` +
+      `This is safer than single-model auto-delete, but still risky — both models can be wrong ` +
+      `the same way, and real coordinates can be lost. Rows the second model does not confirm ` +
+      `keep their 🗑 flag for manual review. Continue?`
+    );
+    if (!sure) return llmStatus('Cancelled — two-model deletion not confirmed.');
   }
   if (s.files.size === 0) {
     return llmStatus(state.files.some((f) => !f.error)
@@ -1893,7 +1928,7 @@ $('#llm-run').addEventListener('click', async () => {
   const counts = {
     ok: 0, mismatch: 0, not_found: 0, filled: 0, noted: 0,
     flagged: 0, deleted: 0, unbadged: 0, retried: 0, retryFixed: 0,
-    deletedInfo: [], errors: [],
+    confirmChecked: 0, confirmKept: 0, deletedInfo: [], errors: [],
   };
 
   // The Notes column comes into existence the first time a notes run starts
@@ -1925,9 +1960,10 @@ $('#llm-run').addEventListener('click', async () => {
   const nextRows = new Set(); // rows that got a next-page retry
   let stopped = false; // hard stop (auth failure)
 
-  // Request config for the primary model, and the second model (if retry is on).
+  // Request config for the primary model, and the second model (used by the
+  // "retry unfinished rows" and/or "confirm deletions" features).
   const primaryCfg = { kind: s.kind, url: s.url, model: s.model, key: s.key };
-  const retryCfg = s.retry ? { kind: s.retryKind, url: s.retryUrl, model: s.retryModel, key: s.retryKey } : null;
+  const secondCfg = s.useSecondModel ? { kind: s.retryKind, url: s.retryUrl, model: s.retryModel, key: s.retryKey } : null;
 
   // Dispatch a list of requests. With a batch delay set, fire fixed-size batches
   // on a wall-clock cadence (runBatched); otherwise keep a steady pool in flight
@@ -1966,16 +2002,9 @@ $('#llm-run').addEventListener('click', async () => {
     return false;
   };
 
-  // One request: build prompt, send, parse. Applies nothing itself. `cfg`
-  // chooses which model/endpoint/key to hit (primary or retry); the task
-  // instructions are always the same.
-  const sendChunk = async (chunk, label, allowPrevHere, allowNextHere = false, cfg = primaryCfg) => {
-    const { system, user } = buildPrompt({
-      rows: chunk.rows, pages: chunk.pages, cols: state.cols,
-      extra: s.extra, verify: s.verify, fill: s.fill, genus: s.genus, species: s.species,
-      flagDelete: s.flagDelete, notes: s.notes, notesSpec: s.notesSpec,
-      allowPrev: allowPrevHere, allowNext: allowNextHere,
-    });
+  // Send an already-built prompt to model `cfg`, parse the JSON row results.
+  // Returns null (and records the problem) on an API error or empty parse.
+  const postPrompt = async (system, user, label, cfg) => {
     const req = buildRequest({
       kind: cfg.kind, url: cfg.url, model: cfg.model, apiKey: cfg.key,
       system, user, browser: IS_WEB,
@@ -1997,6 +2026,30 @@ $('#llm-run').addEventListener('click', async () => {
       return null;
     }
     return results;
+  };
+
+  // One extraction request: build the full-task prompt, send, parse. `cfg`
+  // chooses which model/endpoint/key to hit; the task instructions are the same.
+  const sendChunk = (chunk, label, allowPrevHere, allowNextHere = false, cfg = primaryCfg) => {
+    const { system, user } = buildPrompt({
+      rows: chunk.rows, pages: chunk.pages, cols: state.cols,
+      extra: s.extra, verify: s.verify, fill: s.fill, genus: s.genus, species: s.species,
+      flagDelete: s.flagDelete, notes: s.notes, notesSpec: s.notesSpec,
+      allowPrev: allowPrevHere, allowNext: allowNextHere,
+    });
+    return postPrompt(system, user, label, cfg);
+  };
+
+  // One delete-confirmation request: a flag-only prompt (no verify/fill/notes)
+  // so the second model does nothing but judge whether each row is a false
+  // positive. Used by the "delete only when a second model agrees" option.
+  const sendConfirm = (chunk, label, cfg) => {
+    const { system, user } = buildPrompt({
+      rows: chunk.rows, pages: chunk.pages, cols: state.cols,
+      extra: s.extra, verify: false, fill: false, genus: false, species: false,
+      flagDelete: true, notes: false, allowPrev: false, allowNext: false,
+    });
+    return postPrompt(system, user, label, cfg);
   };
 
   const applyAndRender = (results) => {
@@ -2192,14 +2245,54 @@ $('#llm-run').addEventListener('click', async () => {
 
     // Retry with a different model: rows the first model left unfinished are
     // re-sent to the second model, which runs the same multi-pass extraction.
-    if (retryCfg && !llmAbort && !stopped) {
+    if (s.retry && secondCfg && !llmAbort && !stopped) {
       const unfinished = [...meta.keys()].filter(isUnfinished);
       counts.retried = unfinished.length;
       if (unfinished.length) {
-        llmStatus(`Retrying ${unfinished.length} unfinished row${unfinished.length === 1 ? '' : 's'} with ${retryCfg.model}…`);
+        llmStatus(`Retrying ${unfinished.length} unfinished row${unfinished.length === 1 ? '' : 's'} with ${secondCfg.model}…`);
         const retryChunks = await buildRetryChunks(unfinished);
-        await runPasses({ cfg: retryCfg, chunks: retryChunks, phase: `Retry (${retryCfg.model})` });
+        await runPasses({ cfg: secondCfg, chunks: retryChunks, phase: `Retry (${secondCfg.model})` });
         counts.retryFixed = unfinished.filter((id) => !isUnfinished(id)).length;
+      }
+    }
+
+    // Two-model deletion: model 1 only flagged (auto-delete was suppressed);
+    // the second model now reviews each flagged row and any it also rejects is
+    // deleted. Rows it does not confirm keep their flag for manual review.
+    if (s.confirmDelete && secondCfg && !llmAbort && !stopped) {
+      const flagged = [...meta.keys()].filter((id) => {
+        const r = state.rows.find((x) => x.id === id);
+        return r && r.llm && r.llm.del;
+      });
+      counts.confirmChecked = flagged.length;
+      if (flagged.length) {
+        llmStatus(`Second model (${secondCfg.model}) reviewing ${flagged.length} flagged row${flagged.length === 1 ? '' : 's'} before deletion…`);
+        const confirmChunks = await buildRetryChunks(flagged);
+        let cdone = 0;
+        await dispatch(confirmChunks, async (chunk, n) => {
+          const results = await sendConfirm(chunk, `Delete-confirm ${n + 1}`, secondCfg);
+          cdone++;
+          llmStatus(`Delete confirmation — ${cdone}/${confirmChunks.length} request${confirmChunks.length === 1 ? '' : 's'} done…`);
+          if (!results) return;
+          const del = new Set();
+          for (const res of results) {
+            const row = state.rows.find((r) => r.id === res.row);
+            if (!row || !(row.llm && row.llm.del)) continue; // only model-1 flags
+            if (res.del === true) {
+              del.add(row.id);
+              counts.deleted++;
+              const m = meta.get(row.id);
+              counts.deletedInfo.push(
+                `#${m ? m.num : '?'} — ${row.lat ?? '(no lat)'}, ${row.lon ?? '(no lon)'}` +
+                `${m ? ` (${m.file} p.${m.page})` : ''}: ${res.note || 'both models flagged it'}`
+              );
+            } else {
+              counts.confirmKept++;
+              row.llm = { ...row.llm, note: `Second model (${secondCfg.model}) did not confirm this flag — kept for manual review.` };
+            }
+          }
+          if (del.size) { removeRows(del); renderAll(); } else renderTable();
+        });
       }
     }
 
@@ -2229,9 +2322,20 @@ $('#llm-run').addEventListener('click', async () => {
   if (counts.unbadged) parts.push(`${counts.unbadged} row${counts.unbadged === 1 ? '' : 's'} still un-badged (run again to retry)`);
   if (s.unsentOnly && skippedSent) parts.push(`${skippedSent} already-sent row${skippedSent === 1 ? '' : 's'} skipped`);
   if (s.flagDelete) {
-    parts.push(s.autoDelete
-      ? `${counts.deleted} row${counts.deleted === 1 ? '' : 's'} auto-deleted`
-      : `${counts.flagged} row${counts.flagged === 1 ? '' : 's'} flagged 🗑 (click a flag or "Delete Flagged" to remove)`);
+    if (s.autoDelete) {
+      parts.push(`${counts.deleted} row${counts.deleted === 1 ? '' : 's'} auto-deleted`);
+    } else if (s.confirmDelete) {
+      parts.push(
+        `${counts.flagged} row${counts.flagged === 1 ? '' : 's'} flagged by model 1; ` +
+        `${counts.deleted} deleted after ${s.retryModel} agreed` +
+        (counts.confirmKept ? `, ${counts.confirmKept} kept where it disagreed` : '') +
+        (counts.flagged - counts.deleted - counts.confirmKept > 0
+          ? `, ${counts.flagged - counts.deleted - counts.confirmKept} still flagged 🗑`
+          : '')
+      );
+    } else {
+      parts.push(`${counts.flagged} row${counts.flagged === 1 ? '' : 's'} flagged 🗑 (click a flag or "Delete Flagged" to remove)`);
+    }
   }
   let msg = `${llmAbort ? 'Stopped early — ' : 'Done — '}${parts.join('; ')}.`;
   if (counts.deletedInfo.length) {

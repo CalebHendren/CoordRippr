@@ -174,6 +174,8 @@
           <label><input type="checkbox" id="llm-overwrite" /> Overwrite non-empty cells</label>
           <label title="Rows the LLM thinks are not real coordinates get a 🗑 flag — you decide what to delete"><input type="checkbox" id="llm-flagdel" /> Flag suspected false positives 🗑</label>
           <label class="danger-opt" title="No confirmation per row — flagged rows are removed immediately. LLMs make mistakes."><input type="checkbox" id="llm-autodel" disabled /> …delete flagged rows automatically <strong>(dangerous)</strong></label>
+          <label class="confirm-opt" title="Model 1 only flags; a second model reviews each flagged row and it is deleted only if the second model agrees it is not a real coordinate. Configure the second model below."><input type="checkbox" id="llm-confirmdel" disabled /> …or delete only when a <strong>second model agrees</strong> with the flag</label>
+          <p class="confirm-note muted">Two-model agreement is safer than automatic deletion, but <strong>still risky</strong> (both models can share the same blind spot), <strong>not necessarily more accurate or efficient</strong>, and <strong>still costs extra</strong> — flagged rows are sent to a second model, roughly doubling their API calls.</p>
         </fieldset>
 
         <fieldset class="wide">
@@ -185,8 +187,9 @@
         </fieldset>
 
         <fieldset class="wide" id="llm-retry-fs">
-          <legend>Retry with a different model</legend>
+          <legend>Second model</legend>
           <label class="retry-toggle" title="After the first model finishes, rows it could not verify/badge — or whose Genus/Species (or other filled columns) are still empty — are automatically re-sent to a second model."><input type="checkbox" id="llm-retry" /> Retry unfinished rows with a second model</label>
+          <p class="retry-hint muted" id="llm-retry-hint">The second model is used by “Retry unfinished rows” and by “delete only when a second model agrees” (Tasks). The settings below appear once either is enabled.</p>
           <div id="llm-retry-config" class="retry-config hidden">
             <label>Retry provider
               <select id="llm-retry-provider"></select>
