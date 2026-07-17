@@ -168,7 +168,9 @@
         <fieldset class="wide">
           <legend>Tasks</legend>
           <label title="Every row you send is checked against the PDF text and gets a ✓ / ⚠ / ? badge. Rows the model skips (no badge) are re-sent automatically until they come back badged."><input type="checkbox" id="llm-verify" checked disabled /> Verify coordinates against the PDF text <span class="muted">(always on — every sent row gets a badge)</span></label>
-          <label><input type="checkbox" id="llm-fill" checked /> Fill the data columns from the PDF text</label>
+          <label title="Fills the Genus column (column 1) with a single-word genus taken from the PDF text near each coordinate."><input type="checkbox" id="llm-genus" checked /> Extract <strong>Genus</strong> → column 1 <span class="muted">(one word)</span></label>
+          <label title="Fills the Species column (column 2) with a single-word species epithet taken from the PDF text near each coordinate."><input type="checkbox" id="llm-species" checked /> Extract <strong>Species</strong> → column 2 <span class="muted">(one word)</span></label>
+          <label title="Fills any remaining data columns (beyond those handled by the Genus/Species toggles) from the PDF text."><input type="checkbox" id="llm-fill" /> Fill the other data columns from the PDF text</label>
           <label><input type="checkbox" id="llm-overwrite" /> Overwrite non-empty cells</label>
           <label title="Rows the LLM thinks are not real coordinates get a 🗑 flag — you decide what to delete"><input type="checkbox" id="llm-flagdel" /> Flag suspected false positives 🗑</label>
           <label class="danger-opt" title="No confirmation per row — flagged rows are removed immediately. LLMs make mistakes."><input type="checkbox" id="llm-autodel" disabled /> …delete flagged rows automatically <strong>(dangerous)</strong></label>
@@ -182,15 +184,57 @@
           </label>
         </fieldset>
 
-        <label class="wide">Add to the prompt <span class="muted">(what columns 1–2 mean, what to look for, …)</span>
-          <textarea id="llm-extra" rows="3" placeholder="e.g. Extract the genus and species for each coordinate from the document text">Extract the genus and species of the organism described near each coordinate from the document text. Put the genus in the Genus column (col1) and the species in the Species column (col2). If a name is abbreviated (e.g. "P. leo"), expand the genus from where the full name appears elsewhere in the text.</textarea>
+        <fieldset class="wide" id="llm-retry-fs">
+          <legend>Retry with a different model</legend>
+          <label class="retry-toggle" title="After the first model finishes, rows it could not verify/badge — or whose Genus/Species (or other filled columns) are still empty — are automatically re-sent to a second model."><input type="checkbox" id="llm-retry" /> Retry unfinished rows with a second model</label>
+          <div id="llm-retry-config" class="retry-config hidden">
+            <label>Retry provider
+              <select id="llm-retry-provider"></select>
+            </label>
+            <label>Retry model
+              <select id="llm-retry-model-select"></select>
+              <input id="llm-retry-model" type="text" spellcheck="false" placeholder="Type a model ID" hidden />
+            </label>
+            <label class="wide">Retry endpoint URL
+              <input id="llm-retry-url" type="text" spellcheck="false" />
+            </label>
+            <label class="retry-secondkey" id="llm-retry-secondkey-wrap" title="Same provider as above: the retry reuses the API key you entered — unless you tick this to use a separate key."><input type="checkbox" id="llm-retry-secondkey" /> Use a separate API key for the retry</label>
+            <label class="wide retry-key" id="llm-retry-key-wrap">Retry API key <span class="muted">(stored unencrypted in this app's local data; sent only to the provider)</span>
+              <input id="llm-retry-key" type="password" spellcheck="false" autocomplete="off" />
+              <button type="button" id="llm-retry-key-link" class="linkish key-link hidden"></button>
+            </label>
+          </div>
+        </fieldset>
+
+        <label class="wide">Add to the prompt <span class="muted">(extra instructions — what other columns mean, what to look for, …)</span>
+          <textarea id="llm-extra" rows="3" placeholder="e.g. Only consider organisms observed at the coordinate, not species merely cited from other studies."></textarea>
         </label>
       </div>
 
       <div id="llm-status" class="muted"></div>
+      <p class="llm-close-hint muted">You can close this window while a run is in progress — it keeps going, and progress shows in the status bar. Reopen LLM Assist to watch it or press Stop.</p>
       <menu>
-        <button value="cancel" id="llm-close" type="submit">Close</button>
+        <button value="cancel" id="llm-close" type="submit" title="Closes this window; a run in progress keeps going">Close</button>
+        <button type="button" id="llm-preview">Preview prompt</button>
         <button type="button" id="llm-run" class="primary">Run</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="llm-preview-dialog">
+    <form method="dialog">
+      <h2>Prompt preview</h2>
+      <p class="muted">Exactly what would be sent for the first request, built from the current settings. If “Retry with a different model” is on, the second model receives the same instructions.</p>
+      <div class="preview-section">
+        <h3>System prompt</h3>
+        <pre id="llm-preview-system"></pre>
+      </div>
+      <div class="preview-section">
+        <h3>User message <span class="muted">(first request)</span></h3>
+        <pre id="llm-preview-user"></pre>
+      </div>
+      <menu>
+        <button value="ok" type="submit" class="primary">Done</button>
       </menu>
     </form>
   </dialog>

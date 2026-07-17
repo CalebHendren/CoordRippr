@@ -9,6 +9,10 @@ boundaries.
 
 Support development on [Ko-fi](https://ko-fi.com/calebhendren).
 
+![CoordRippr detecting a mix of clean and messy coordinates in a two-column journal article, with the editable CSV (Genus / Species / Latitude / Longitude) on the left and yellow highlights on the page](docs/screenshot.png)
+
+*A two-column journal article with deliberately awful coordinates — DMS with symbols, `o`-for-degree, signed decimals, space-separated DMS, `Lat./Long.` labels — all detected, while years, depths, voucher ranges and an out-of-range fix are ignored.*
+
 ## Features
 
 - **Projects** — Multiple independent projects, each with its own PDFs, rows,
@@ -40,8 +44,8 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   scrolls to its highlight in the PDF, and clicking a highlight scrolls to its
   CSV row.
 - **CSV table** — Editable table with a header row:
-  - Columns 1–2 are user-defined (editable headers); latitude/longitude occupy
-    columns 3–4.
+  - Columns 1–2 are user-defined (editable headers, **Genus** / **Species** by
+    default); latitude/longitude occupy columns 3–4.
   - Output as **DD**, **DMS**, or **Both** (DD in columns 3/4, DMS in 5/6),
     independent of the source format.
   - Coordinate cells are reformatted to the selected output on entry;
@@ -52,15 +56,31 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     to rows that also match on columns 1–2 and/or originate from the same PDF.
 - **Export** — CSV with a UTF-8 BOM for correct degree-symbol rendering in Excel.
 - **LLM Assist** (requires an API key) — Sends page text to an LLM to verify the
-  extracted coordinates and to populate columns 1–2 from the surrounding text
-  (e.g. species in column 1, colour in column 2; rename the headers and add
-  prompt instructions to specify the desired output):
+  extracted coordinates and to populate the data columns from the surrounding
+  text:
   - Providers: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek, Qwen
     (Alibaba), Kimi (Moonshot), GLM (Zhipu), or any OpenAI-compatible endpoint.
     The API key is stored locally and sent only to the selected provider. A
     **Get an API key** link opens the provider's key page.
   - Per-provider model dropdown, plus a **Custom…** option for an arbitrary
     model ID.
+  - **Genus / Species extraction** — explicit toggles that fill columns 1–2 from
+    the text near each coordinate. Both are constrained to a single word
+    (enforced in the prompt and again on the result), so `"Panthera leo"`
+    returned for the genus is trimmed to `Panthera`. A separate **Fill the other
+    data columns** option covers any additional columns you add.
+  - **Retry with a different model** — after the first model finishes, rows it
+    could not verify/badge (or whose Genus/Species/filled columns are still
+    empty) are automatically re-sent to a second model — e.g.
+    `deepseek-v4-flash` first, then `deepseek-v4-pro` or Claude. A retry on the
+    **same provider** reuses the primary API key unless a *separate key* box is
+    ticked; a retry on a **different provider** uses its own key.
+  - **Preview prompt** — shows the exact system and user messages that will be
+    sent (built from the current settings and your first page of rows) before
+    anything leaves your machine.
+  - **Runs in the background** — the window can be closed without stopping a run;
+    progress continues in the footer status bar, and reopening LLM Assist shows
+    the live status or lets you press *Stop*.
   - Scope: pages with detected coordinates only, or full PDFs.
   - Concurrency: a bounded request pool of configurable size (`1` = sequential).
     Most effective with **one request per page**, which splits a PDF into many
@@ -70,13 +90,18 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     whether the previous batch has completed. `0` (default) retains the
     steady-pool behaviour.
   - Per-row verdict badge: ✓ confirmed, ⚠ mismatch (click to apply the suggested
-    correction), ? not found.
+    correction), ? not found. Rows the model skips are automatically re-sent
+    until they come back badged.
   - False-positive flagging: optionally flags rows that are not coordinates
     (dates, measurements, page numbers, etc.) with a 🗑 marker for one-by-one or
     bulk removal (*Delete Flagged*). An opt-in automatic-deletion mode removes
     flagged rows without confirmation; it resets each run and requires
     confirmation before starting.
+  - Optional LLM-filled **Notes** column with a free-text description of what the
+    notes should contain.
   - LLM output is not authoritative. Verify all results against the source PDFs.
+
+  ![The LLM Assist dialog showing the Genus and Species extraction toggles and the "Retry with a different model" section, configured to verify with DeepSeek and retry unfinished rows with Claude](docs/llm-assist.png)
 - **Update check** — Compares the running version against the latest GitHub
   release daily, and via a *Check for updates* button in the footer. Nothing is
   downloaded automatically.
@@ -132,9 +157,12 @@ Actions". Browser-build caveats:
 4. Select the coordinate output format in the toolbar (DD / DMS / Both).
 5. Correct any parser errors (edits are reformatted automatically) and delete
    false positives; the detection net is intentionally wide.
-6. Optional: **LLM Assist…** — select a provider, enter an API key, specify the
-   contents of columns 1–2, and run verification/fill. Review the results before
-   relying on them.
+6. Optional: **LLM Assist…** — select a provider, enter an API key, toggle
+   **Genus** / **Species** extraction (and any other tasks), optionally enable
+   **Retry with a different model** for rows the first model can't finish, and
+   run. Use **Preview prompt** to see exactly what will be sent first. The window
+   can be closed while it runs — progress continues in the status bar. Review the
+   results before relying on them.
 7. **Export CSV…**
 
 > Detection operates on the PDF text layer. Scanned or image-only PDFs contain no
@@ -163,6 +191,8 @@ Key modules:
   match-to-rectangle mapping.
 - `tools/make-sample-pdf.mjs` — regenerates `test/fixtures/sample.pdf`, the
   two-column test document.
+- `tools/make-demo-pdf.mjs` — regenerates the two-column "journal article" demo
+  used for the README screenshot (`node tools/make-demo-pdf.mjs [outfile]`).
 - `build/icon.svg` — icon source; rasterize with:
   ```bash
   npm i --no-save sharp
