@@ -212,6 +212,15 @@ export function parseResultsJson(text) {
 const VERDICTS = ['ok', 'mismatch', 'not_found'];
 
 /**
+ * First whitespace-delimited token of a value. Genus and species are always a
+ * single word, so their extracted values are collapsed to one word — a model
+ * that returns "Panthera leo" for the genus yields just "Panthera".
+ */
+export function oneWord(v) {
+  return String(v ?? '').trim().split(/\s+/)[0] || '';
+}
+
+/**
  * @param {object} r        raw result object from the model
  * @param {number} colCount how many data columns ("col1"…"colN") to read
  */
@@ -245,13 +254,15 @@ export function normalizeResult(r, colCount = 2) {
  * @param {string} p.extra  user's additional instructions
  * @param {boolean} p.verify
  * @param {boolean} p.fill
+ * @param {boolean} p.genus   extract the genus (a single word) into col1
+ * @param {boolean} p.species extract the species epithet (a single word) into col2
  * @param {boolean} p.flagDelete  ask the model to flag false-positive rows
  * @param {boolean} p.notes      fill the extra Notes column ("notes_col")
  * @param {string}  p.notesSpec  what the user wants the notes to contain
  * @param {boolean} p.allowPrev  model may request the preceding page via "need_prev"
  * @param {boolean} p.allowNext  model may request the following page via "need_next"
  */
-export function buildPrompt({ rows, pages, cols, extra, verify, fill, flagDelete, notes, notesSpec, allowPrev, allowNext }) {
+export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, species, flagDelete, notes, notesSpec, allowPrev, allowNext }) {
   const colKeys = cols.map((_, i) => `"col${i + 1}"`);
   const tasks = [];
   if (verify) {
@@ -262,14 +273,38 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, flagDelete
         `"not_found" = you cannot find support for the coordinates in the text.`
     );
   }
-  if (fill) {
-    const naming = cols.map((name, i) => `column ${i + 1} is named "${name}"`).join(', ');
+  if (genus) {
     tasks.push(
-      `- FILL ${colKeys.join(', ')} for each row using information in the document text near that row's coordinates. ` +
-        `${naming.charAt(0).toUpperCase()}${naming.slice(1)} — fill each with the value its name implies. ` +
-        `If the names are generic, use the most useful identifying label from the text (site/sample/species/place name) for col1 ` +
-        `and further distinguishing attributes for the rest. Keep values short. Use "" when the text offers nothing.`
+      `- EXTRACT GENUS into "col1" (the ${cols[0] || 'Genus'} column): the genus of the organism described in the document ` +
+        `text near that row's coordinates. The genus is ALWAYS a single word — one capitalised Latin word (e.g. "Panthera"). ` +
+        `Return at most one word; never a full binomial, author name or note. If a name is abbreviated (e.g. "P. leo"), ` +
+        `expand the genus from where the full name appears elsewhere in the text. Use "" when the text gives no genus.`
     );
+  }
+  if (species) {
+    tasks.push(
+      `- EXTRACT SPECIES into "col2" (the ${cols[1] || 'Species'} column): the specific epithet of the organism described in ` +
+        `the document text near that row's coordinates. The species is ALWAYS a single word — one lower-case Latin word ` +
+        `(e.g. "leo"). Return at most one word; never the genus, author name, subspecies or note. Use "" when the text gives no species.`
+    );
+  }
+  if (fill) {
+    // Columns already handled by the dedicated Genus/Species tasks are left out
+    // so the model gets exactly one instruction per column.
+    const skip = new Set();
+    if (genus) skip.add(0);
+    if (species) skip.add(1);
+    const fillCols = cols.map((name, i) => ({ name, i })).filter((c) => !skip.has(c.i));
+    if (fillCols.length) {
+      const fillKeys = fillCols.map((c) => `"col${c.i + 1}"`);
+      const naming = fillCols.map((c) => `column ${c.i + 1} is named "${c.name}"`).join(', ');
+      tasks.push(
+        `- FILL ${fillKeys.join(', ')} for each row using information in the document text near that row's coordinates. ` +
+          `${naming.charAt(0).toUpperCase()}${naming.slice(1)} — fill each with the value its name implies. ` +
+          `If the names are generic, use the most useful identifying label from the text (site/sample/species/place name) ` +
+          `and further distinguishing attributes. Keep values short. Use "" when the text offers nothing.`
+      );
+    }
   }
   if (allowPrev || allowNext) {
     const flips = [];

@@ -9,7 +9,7 @@ import {
 import { buildPageText, rectsForRange } from './pdftext.js';
 import {
   PROVIDERS, buildRequest, extractText, parseResultsJson, normalizeResult,
-  buildPrompt, chunkWork, chunkPerPage, runPool, runBatched,
+  buildPrompt, oneWord, chunkWork, chunkPerPage, runPool, runBatched,
   DEFAULT_CONCURRENCY, MAX_CONCURRENCY, DEFAULT_BATCH_DELAY, MAX_BATCH_DELAY_MS,
 } from './llm.js';
 import { buildImagePdf } from './pdfout.js';
@@ -1401,10 +1401,20 @@ function llmPrefs() {
   p.keys = p.keys || {};
   p.models = p.models || {};
   p.urls = p.urls || {};
+  // Retry-model settings are kept in their own per-provider maps so a provider
+  // can serve as both the primary and the retry with different models/keys.
+  p.retryModels = p.retryModels || {};
+  p.retryUrls = p.retryUrls || {};
+  p.retryKeys = p.retryKeys || {};
   return p;
 }
 
-function llmStatus(msg) { $('#llm-status').textContent = msg; }
+function llmStatus(msg) {
+  $('#llm-status').textContent = msg;
+  // Mirror progress to the footer so the run can be watched with the dialog
+  // closed (the user can close it without stopping the run).
+  if (llmRunning && msg) setStatus(`✨ LLM Assist — ${msg.split('\n')[0]}`, true);
+}
 
 // Sentinel <option> value that means "let me type my own model ID".
 const CUSTOM_MODEL_OPT = '__custom__';
@@ -1415,11 +1425,40 @@ function syncLlmProviderFields() {
   const p = PROVIDERS[id];
   const model = prefs.models[id] ?? p.model;
   $('#llm-model').value = model;
-  populateModelSelect(p, model);
+  fillModelSelect($('#llm-model-select'), $('#llm-model'), p, model);
   $('#llm-url').value = prefs.urls[id] ?? p.url;
   $('#llm-key').value = prefs.keys[id] ?? '';
   $('#llm-key').placeholder = p.keyHint || '';
-  const link = $('#llm-key-link');
+  setKeyLink($('#llm-key-link'), p);
+  // The primary provider drives whether the retry can reuse its key.
+  syncRetryFields();
+}
+
+// Fill a model dropdown from the provider's presets plus "Custom…". Picks the
+// current model if it's a preset, else Custom + reveals the free-text field.
+function fillModelSelect(sel, input, p, model) {
+  const models = p.models || [];
+  const known = models.includes(model);
+  sel.innerHTML =
+    models.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('') +
+    `<option value="${CUSTOM_MODEL_OPT}">Custom…</option>`;
+  sel.value = known ? model : CUSTOM_MODEL_OPT;
+  input.hidden = sel.value !== CUSTOM_MODEL_OPT;
+}
+
+// The free-text model field is only shown when "Custom…" is picked; otherwise
+// the dropdown alone drives the model value.
+function onModelSelectChange(sel, input) {
+  if (sel.value !== CUSTOM_MODEL_OPT) input.value = sel.value;
+  input.hidden = sel.value !== CUSTOM_MODEL_OPT;
+  if (sel.value === CUSTOM_MODEL_OPT) {
+    input.focus();
+    input.select();
+  }
+}
+
+// Point an API-key "get a key" link at the provider's key page (or hide it).
+function setKeyLink(link, p) {
   if (p.keyUrl) {
     link.textContent = `Get an API key from ${p.keyName || p.label}`;
     link.dataset.url = p.keyUrl;
@@ -1431,41 +1470,45 @@ function syncLlmProviderFields() {
   }
 }
 
-// Fill the model dropdown from the provider's presets plus "Custom…". Picks the
-// current model if it's a preset, else Custom + reveals the free-text field.
-function populateModelSelect(p, model) {
-  const sel = $('#llm-model-select');
-  const models = p.models || [];
-  const known = models.includes(model);
-  sel.innerHTML =
-    models.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('') +
-    `<option value="${CUSTOM_MODEL_OPT}">Custom…</option>`;
-  sel.value = known ? model : CUSTOM_MODEL_OPT;
-  syncModelCustomState();
-}
+// Show/populate the "retry with a different model" fields. The retry can reuse
+// the primary API key when it targets the same provider (unless a separate key
+// is requested); a different provider always needs its own key.
+function syncRetryFields() {
+  // The second-model settings appear when any second-model feature is on:
+  // "Retry unfinished rows" or "delete only when a second model agrees".
+  const on = $('#llm-retry').checked || $('#llm-confirmdel').checked;
+  $('#llm-retry-config').classList.toggle('hidden', !on);
+  $('#llm-retry-hint').classList.toggle('hidden', on);
+  if (!on) return;
+  const prefs = llmPrefs();
+  const primaryId = $('#llm-provider').value;
+  const rid = $('#llm-retry-provider').value;
+  const p = PROVIDERS[rid];
+  const model = prefs.retryModels[rid] ?? p.model;
+  $('#llm-retry-model').value = model;
+  fillModelSelect($('#llm-retry-model-select'), $('#llm-retry-model'), p, model);
+  $('#llm-retry-url').value = prefs.retryUrls[rid] ?? p.url;
 
-// The free-text model field is only shown when "Custom…" is picked; otherwise
-// the dropdown alone drives the model value.
-function syncModelCustomState() {
-  $('#llm-model').hidden = $('#llm-model-select').value !== CUSTOM_MODEL_OPT;
-}
-
-function onModelSelectChange() {
-  const sel = $('#llm-model-select');
-  const input = $('#llm-model');
-  if (sel.value !== CUSTOM_MODEL_OPT) input.value = sel.value;
-  syncModelCustomState();
-  if (sel.value === CUSTOM_MODEL_OPT) {
-    input.focus();
-    input.select();
+  const sameProvider = rid === primaryId;
+  // The "use a separate key" choice only matters for the same provider; a
+  // different provider always needs its own key.
+  $('#llm-retry-secondkey-wrap').classList.toggle('hidden', !sameProvider);
+  const separateKey = !sameProvider || $('#llm-retry-secondkey').checked;
+  $('#llm-retry-key-wrap').classList.toggle('hidden', !separateKey);
+  if (separateKey) {
+    $('#llm-retry-key').value = prefs.retryKeys[rid] ?? '';
+    $('#llm-retry-key').placeholder = p.keyHint || '';
+    setKeyLink($('#llm-retry-key-link'), p);
   }
 }
 
 function initLlmDialog() {
-  const sel = $('#llm-provider');
-  sel.innerHTML = Object.entries(PROVIDERS)
+  const providerOptions = Object.entries(PROVIDERS)
     .map(([id, p]) => `<option value="${id}">${escapeHtml(p.label)}</option>`)
     .join('');
+  const sel = $('#llm-provider');
+  sel.innerHTML = providerOptions;
+  $('#llm-retry-provider').innerHTML = providerOptions;
   const prefs = llmPrefs();
   if (prefs.provider && PROVIDERS[prefs.provider]) sel.value = prefs.provider;
   const scopeRadio = document.querySelector(`input[name="llm-scope"][value="${prefs.scope}"]`);
@@ -1474,10 +1517,12 @@ function initLlmDialog() {
   if (sendModeRadio) sendModeRadio.checked = true;
   $('#llm-files-all').addEventListener('click', () => setAllLlmFiles(true));
   $('#llm-files-none').addEventListener('click', () => setAllLlmFiles(false));
-  if (prefs.extra) $('#llm-extra').value = prefs.extra;
+  if (prefs.extra != null) $('#llm-extra').value = prefs.extra;
   // Verification is always on — every sent row must come back with a badge —
   // so it is never restored to "off" from an old preference.
   $('#llm-verify').checked = true;
+  if (prefs.genus != null) $('#llm-genus').checked = prefs.genus;
+  if (prefs.species != null) $('#llm-species').checked = prefs.species;
   if (prefs.fill != null) $('#llm-fill').checked = prefs.fill;
   if (prefs.overwrite != null) $('#llm-overwrite').checked = prefs.overwrite;
   if (prefs.flagDelete != null) $('#llm-flagdel').checked = prefs.flagDelete;
@@ -1488,10 +1533,23 @@ function initLlmDialog() {
   $('#llm-delay').max = String(MAX_BATCH_DELAY_MS);
   if (prefs.notes != null) $('#llm-notes').checked = prefs.notes;
   if (prefs.notesSpec) $('#llm-notes-spec').value = prefs.notesSpec;
-  // Auto-delete is deliberately NOT restored from prefs: it's dangerous, so
-  // it must be opted into per run.
-  syncAutoDelState();
-  $('#llm-flagdel').addEventListener('change', syncAutoDelState);
+  // Retry model settings.
+  if (prefs.retry != null) $('#llm-retry').checked = prefs.retry;
+  if (prefs.retryProvider && PROVIDERS[prefs.retryProvider]) $('#llm-retry-provider').value = prefs.retryProvider;
+  if (prefs.retrySecondKey != null) $('#llm-retry-secondkey').checked = prefs.retrySecondKey;
+  // The deletion follow-ups (auto-delete, second-model confirmation) are
+  // deliberately NOT restored from prefs: both delete rows, so they must be
+  // opted into per run.
+  syncDeleteOpts();
+  $('#llm-flagdel').addEventListener('change', syncDeleteOpts);
+  $('#llm-autodel').addEventListener('change', (e) => {
+    if (e.currentTarget.checked) $('#llm-confirmdel').checked = false; // mutually exclusive
+    syncDeleteOpts();
+  });
+  $('#llm-confirmdel').addEventListener('change', (e) => {
+    if (e.currentTarget.checked) $('#llm-autodel').checked = false; // mutually exclusive
+    syncDeleteOpts();
+  });
   syncPerPageState();
   for (const radio of document.querySelectorAll('input[name="llm-scope"]')) {
     radio.addEventListener('change', syncPerPageState);
@@ -1500,18 +1558,34 @@ function initLlmDialog() {
   $('#llm-notes').addEventListener('change', syncNotesState);
   syncLlmProviderFields();
   sel.addEventListener('change', syncLlmProviderFields);
-  $('#llm-model-select').addEventListener('change', onModelSelectChange);
+  $('#llm-model-select').addEventListener('change', (e) => onModelSelectChange(e.currentTarget, $('#llm-model')));
   $('#llm-key-link').addEventListener('click', (e) => {
     const url = e.currentTarget.dataset.url;
     if (url) api.openExternal(url);
   });
+  // Retry wiring.
+  $('#llm-retry').addEventListener('change', syncRetryFields);
+  $('#llm-retry-provider').addEventListener('change', syncRetryFields);
+  $('#llm-retry-secondkey').addEventListener('change', syncRetryFields);
+  $('#llm-retry-model-select').addEventListener('change', (e) => onModelSelectChange(e.currentTarget, $('#llm-retry-model')));
+  $('#llm-retry-key-link').addEventListener('click', (e) => {
+    const url = e.currentTarget.dataset.url;
+    if (url) api.openExternal(url);
+  });
+  $('#llm-preview').addEventListener('click', previewLlmPrompt);
 }
 
-function syncAutoDelState() {
+// The two follow-ups to flagging (immediate auto-delete, or second-model
+// confirmation) both need flagging on, and are mutually exclusive.
+function syncDeleteOpts() {
   const flag = $('#llm-flagdel').checked;
   const auto = $('#llm-autodel');
-  if (!flag) auto.checked = false;
+  const confirm = $('#llm-confirmdel');
+  if (!flag) { auto.checked = false; confirm.checked = false; }
   auto.disabled = !flag;
+  confirm.disabled = !flag;
+  // Checking the second-model delete option reveals the second-model settings.
+  syncRetryFields();
 }
 
 // Per-page batching only applies when we're NOT sending the whole PDF.
@@ -1614,13 +1688,36 @@ function collectLlmSettings() {
     batchDelay: clampBatchDelay($('#llm-delay').value),
     extra: $('#llm-extra').value,
     verify: $('#llm-verify').checked,
+    genus: $('#llm-genus').checked,
+    species: $('#llm-species').checked,
     fill: $('#llm-fill').checked,
     overwrite: $('#llm-overwrite').checked,
+    // Second-model delete confirmation implies flagging (model 1 must flag
+    // before model 2 can confirm), and is exclusive with immediate auto-delete.
+    confirmDelete: $('#llm-flagdel').checked && $('#llm-confirmdel').checked,
     flagDelete: $('#llm-flagdel').checked,
-    autoDelete: $('#llm-flagdel').checked && $('#llm-autodel').checked,
+    autoDelete: $('#llm-flagdel').checked && $('#llm-autodel').checked && !$('#llm-confirmdel').checked,
     notes: $('#llm-notes').checked,
     notesSpec: $('#llm-notes-spec').value,
   };
+
+  // Second-model settings, shared by "retry unfinished rows" and "delete only
+  // when a second model agrees". When the second model is the same provider and
+  // no separate key is requested it reuses the primary key; otherwise it uses
+  // its own (a second key, or the other provider's key).
+  const retryId = $('#llm-retry-provider').value;
+  const retrySameProvider = retryId === id;
+  const retrySecondKey = $('#llm-retry-secondkey').checked;
+  const retrySeparateKey = !retrySameProvider || retrySecondKey;
+  s.retry = $('#llm-retry').checked;
+  s.retryProvider = retryId;
+  s.retryKind = PROVIDERS[retryId].kind;
+  s.retryModel = $('#llm-retry-model').value.trim();
+  s.retryUrl = $('#llm-retry-url').value.trim();
+  s.retryKey = retrySeparateKey ? $('#llm-retry-key').value.trim() : s.key;
+  // Any feature that engages the second model.
+  s.useSecondModel = s.retry || s.confirmDelete;
+
   const prefs = llmPrefs();
   prefs.provider = id;
   prefs.models[id] = s.model;
@@ -1633,11 +1730,19 @@ function collectLlmSettings() {
   prefs.batchDelay = s.batchDelay;
   prefs.extra = s.extra;
   prefs.verify = s.verify;
+  prefs.genus = s.genus;
+  prefs.species = s.species;
   prefs.fill = s.fill;
   prefs.overwrite = s.overwrite;
   prefs.flagDelete = s.flagDelete;
   prefs.notes = s.notes;
   prefs.notesSpec = s.notesSpec;
+  prefs.retry = s.retry;
+  prefs.retryProvider = retryId;
+  prefs.retrySecondKey = retrySecondKey;
+  prefs.retryModels[retryId] = s.retryModel;
+  prefs.retryUrls[retryId] = s.retryUrl;
+  if (retrySeparateKey) prefs.retryKeys[retryId] = $('#llm-retry-key').value.trim();
   localStorage.setItem(LLM_PREFS_KEY, JSON.stringify(prefs));
   return s;
 }
@@ -1686,11 +1791,18 @@ function applyLlmResults(results, s, counts, meta) {
       row.llm = { ...(row.llm || {}), verdict: res.verdict, note: res.note, lat: res.lat, lon: res.lon };
       counts[res.verdict]++;
     }
-    if (s.fill) {
+    if (s.fill || s.genus || s.species) {
       if (!row.cells) row.cells = emptyCells();
       res.cols.forEach((v, i) => {
-        if (i >= state.cols.length || !v) return;
-        if (s.overwrite || !String(row.cells[i] || '').trim()) { row.cells[i] = v; counts.filled++; }
+        if (i >= state.cols.length) return;
+        // Genus (col 1) and Species (col 2) are always a single word; the
+        // dedicated toggles gate those columns, "Fill" gates the rest.
+        const isGenus = i === 0 && s.genus;
+        const isSpecies = i === 1 && s.species;
+        if (!(s.fill || isGenus || isSpecies)) return;
+        const val = (isGenus || isSpecies) ? oneWord(v) : v;
+        if (!val) return;
+        if (s.overwrite || !String(row.cells[i] || '').trim()) { row.cells[i] = val; counts.filled++; }
       });
     }
     if (s.notes && res.notesCol && (s.overwrite || !String(row.notes || '').trim())) {
@@ -1715,8 +1827,49 @@ function applyLlmResults(results, s, counts, meta) {
   if (toDelete.size) removeRows(toDelete);
 }
 
+// Build the exact prompt the first request would send (system + user) from the
+// current settings and show it. Uses the first real chunk when PDFs/rows are
+// available, else a small illustrative example so the instructions still show.
+async function previewLlmPrompt() {
+  const s = collectLlmSettings();
+  const perPage = s.perPage && s.scope !== 'all';
+  const hasExtra = !!(s.extra && s.extra.trim());
+  const allow = (s.fill || s.genus || s.species || hasExtra) && s.scope !== 'all';
+  let chunk = null;
+  if (s.files.size) {
+    // Ignore the "unsent only" filter here so a real chunk shows even after a run.
+    const { work } = buildLlmWork({ scope: s.scope, files: s.files, unsentOnly: false });
+    if (work.length) {
+      const w = work[0];
+      const pages = [];
+      for (const num of w.pageNums) {
+        pages.push({ file: w.file.name, page: num, text: await pageTextFor(w.file, num) });
+      }
+      chunk = (perPage ? chunkPerPage(pages, w.rows) : chunkWork(pages, w.rows))[0] || null;
+    }
+  }
+  if (!chunk) {
+    chunk = {
+      rows: [{ id: 'example', num: 1, cells: emptyCells(), lat: 41.4034, lon: 2.1741, file: 'example.pdf', page: 1 }],
+      pages: [{ file: 'example.pdf', page: 1, text: '(No PDF text available for a real preview — load PDFs and detect coordinates, or tick a PDF to send. The instructions are exactly what will be sent.)' }],
+    };
+  }
+  const { system, user } = buildPrompt({
+    rows: chunk.rows, pages: chunk.pages, cols: state.cols,
+    extra: s.extra, verify: s.verify, fill: s.fill, genus: s.genus, species: s.species,
+    flagDelete: s.flagDelete, notes: s.notes, notesSpec: s.notesSpec, allowPrev: allow, allowNext: allow,
+  });
+  $('#llm-preview-system').textContent = system;
+  const MAX = 8000;
+  $('#llm-preview-user').textContent =
+    user.length > MAX ? `${user.slice(0, MAX)}\n…(truncated for preview — ${user.length - MAX} more characters)` : user;
+  $('#llm-preview-dialog').showModal();
+}
+
 $('#btn-llm').addEventListener('click', () => {
-  llmStatus('');
+  // While a run is going, reopening is just to monitor/stop it — keep its
+  // live status rather than wiping it.
+  if (!llmRunning) llmStatus('');
   renderLlmFileList();
   llmDialog.showModal();
 });
@@ -1731,7 +1884,13 @@ $('#llm-run').addEventListener('click', async () => {
   if (!s.url) return llmStatus('Enter an endpoint URL.');
   if (!s.model) return llmStatus('Enter a model name.');
   if (!s.key && s.provider !== 'custom') return llmStatus('Enter your API key.');
-  if (!s.verify && !s.fill && !s.flagDelete && !s.notes) return llmStatus('Pick at least one task.');
+  if (!s.verify && !s.fill && !s.genus && !s.species && !s.flagDelete && !s.notes) return llmStatus('Pick at least one task.');
+  if (s.useSecondModel) {
+    const why = s.retry && s.confirmDelete ? 'second model' : s.retry ? 'retry model' : 'delete-confirmation model';
+    if (!s.retryUrl) return llmStatus(`Enter the ${why}’s endpoint URL (or turn its option off).`);
+    if (!s.retryModel) return llmStatus(`Enter the ${why}’s name (or turn its option off).`);
+    if (!s.retryKey && s.retryProvider !== 'custom') return llmStatus(`Enter the ${why}’s API key (or turn its option off).`);
+  }
   if (s.autoDelete) {
     const sure = confirm(
       'Automatic deletion is enabled: rows the LLM flags as false positives will be ' +
@@ -1739,6 +1898,17 @@ $('#llm-run').addEventListener('click', async () => {
       'LLMs make mistakes — real coordinates can be lost. Continue?'
     );
     if (!sure) return llmStatus('Cancelled — automatic deletion not confirmed.');
+  }
+  if (s.confirmDelete) {
+    const sure = confirm(
+      `Two-model deletion is enabled: model 1 flags suspected false positives, then the ` +
+      `second model (${s.retryModel}) reviews each flag and any row it also rejects is DELETED ` +
+      `without asking you per row.\n\n` +
+      `This is safer than single-model auto-delete, but still risky — both models can be wrong ` +
+      `the same way, and real coordinates can be lost. Rows the second model does not confirm ` +
+      `keep their 🗑 flag for manual review. Continue?`
+    );
+    if (!sure) return llmStatus('Cancelled — two-model deletion not confirmed.');
   }
   if (s.files.size === 0) {
     return llmStatus(state.files.some((f) => !f.error)
@@ -1757,7 +1927,8 @@ $('#llm-run').addEventListener('click', async () => {
   $('#llm-run').textContent = 'Stop';
   const counts = {
     ok: 0, mismatch: 0, not_found: 0, filled: 0, noted: 0,
-    flagged: 0, deleted: 0, rebadged: 0, unbadged: 0, deletedInfo: [], errors: [],
+    flagged: 0, deleted: 0, unbadged: 0, retried: 0, retryFixed: 0,
+    confirmChecked: 0, confirmKept: 0, deletedInfo: [], errors: [],
   };
 
   // The Notes column comes into existence the first time a notes run starts
@@ -1769,13 +1940,16 @@ $('#llm-run').addEventListener('click', async () => {
 
   // Per-page batching and adjacent-page requests only apply when NOT sending
   // the whole PDF. Page flips let the model pull the page before/after a row to
-  // finish FILL columns or anything the "Add to the prompt" instructions ask.
+  // finish the Genus/Species/Fill columns or anything the "Add to the prompt"
+  // instructions ask.
   const perPage = s.perPage && s.scope !== 'all';
   const hasExtra = !!(s.extra && s.extra.trim());
-  const allowPrev = (s.fill || hasExtra) && s.scope !== 'all';
-  const allowNext = (s.fill || hasExtra) && s.scope !== 'all';
+  const wantsCols = s.fill || s.genus || s.species || hasExtra;
+  const allowPrev = wantsCols && s.scope !== 'all';
+  const allowNext = wantsCols && s.scope !== 'all';
   const MAX_PREV_PASSES = 3; // how far back a stubborn row may walk, one page per pass
   const MAX_NEXT_PASSES = 3; // how far forward a stubborn row may walk, one page per pass
+  const MAX_BADGE_RETRIES = 2;
 
   // rowId -> context for retries and the deletion report.
   const meta = new Map();
@@ -1785,6 +1959,11 @@ $('#llm-run').addEventListener('click', async () => {
   const prevRows = new Set(); // rows that got a previous-page retry
   const nextRows = new Set(); // rows that got a next-page retry
   let stopped = false; // hard stop (auth failure)
+
+  // Request config for the primary model, and the second model (used by the
+  // "retry unfinished rows" and/or "confirm deletions" features).
+  const primaryCfg = { kind: s.kind, url: s.url, model: s.model, key: s.key };
+  const secondCfg = s.useSecondModel ? { kind: s.retryKind, url: s.retryUrl, model: s.retryModel, key: s.retryKey } : null;
 
   // Dispatch a list of requests. With a batch delay set, fire fixed-size batches
   // on a wall-clock cadence (runBatched); otherwise keep a steady pool in flight
@@ -1803,34 +1982,43 @@ $('#llm-run').addEventListener('click', async () => {
   // A row counts as "processed by the LLM" only once it comes back badged (a
   // ✓/⚠/? verdict or 🗑 flag). Rows the model silently drops are re-sent below
   // until badged, and never marked sent, so a re-run picks them up too.
-  const MAX_BADGE_RETRIES = 2;
   const sentRowIds = new Set();
   const hasBadge = (id) => {
     const r = state.rows.find((rr) => rr.id === id);
     return !!(r && r.llm && (r.llm.verdict || r.llm.del));
   };
 
-  // One request: build prompt, send, parse. Applies nothing itself.
-  const sendChunk = async (chunk, label, allowPrevHere, allowNextHere = false) => {
-    const { system, user } = buildPrompt({
-      rows: chunk.rows, pages: chunk.pages, cols: state.cols,
-      extra: s.extra, verify: s.verify, fill: s.fill, flagDelete: s.flagDelete,
-      notes: s.notes, notesSpec: s.notesSpec, allowPrev: allowPrevHere, allowNext: allowNextHere,
-    });
+  // A row is "unfinished" when the model could not badge it, or left a task
+  // column (Genus, Species, or a Fill column) empty. These are what the second
+  // model is asked to retry.
+  const isUnfinished = (id) => {
+    const row = state.rows.find((r) => r.id === id);
+    if (!row) return false;
+    if (s.verify && !hasBadge(id)) return true;
+    const cell = (i) => String((row.cells && row.cells[i]) || '').trim();
+    if (s.genus && !cell(0)) return true;
+    if (s.species && !cell(1)) return true;
+    if (s.fill && state.cols.some((_, i) => !cell(i))) return true;
+    return false;
+  };
+
+  // Send an already-built prompt to model `cfg`, parse the JSON row results.
+  // Returns null (and records the problem) on an API error or empty parse.
+  const postPrompt = async (system, user, label, cfg) => {
     const req = buildRequest({
-      kind: s.kind, url: s.url, model: s.model, apiKey: s.key,
+      kind: cfg.kind, url: cfg.url, model: cfg.model, apiKey: cfg.key,
       system, user, browser: IS_WEB,
     });
     const res = await api.netFetch(req);
     if (res.error) throw new Error(res.error);
     if (!res.ok) {
       let detail = (res.text || '').slice(0, 300);
-      try { extractText(s.kind, res.text); } catch (e) { detail = e.message; }
+      try { extractText(cfg.kind, res.text); } catch (e) { detail = e.message; }
       counts.errors.push(`HTTP ${res.status}: ${detail}`);
       if (res.status === 401 || res.status === 403) stopped = true; // bad key: no point continuing
       return null;
     }
-    const results = parseResultsJson(extractText(s.kind, res.text))
+    const results = parseResultsJson(extractText(cfg.kind, res.text))
       .map((x) => normalizeResult(x, state.cols.length))
       .filter(Boolean);
     if (results.length === 0) {
@@ -1840,6 +2028,30 @@ $('#llm-run').addEventListener('click', async () => {
     return results;
   };
 
+  // One extraction request: build the full-task prompt, send, parse. `cfg`
+  // chooses which model/endpoint/key to hit; the task instructions are the same.
+  const sendChunk = (chunk, label, allowPrevHere, allowNextHere = false, cfg = primaryCfg) => {
+    const { system, user } = buildPrompt({
+      rows: chunk.rows, pages: chunk.pages, cols: state.cols,
+      extra: s.extra, verify: s.verify, fill: s.fill, genus: s.genus, species: s.species,
+      flagDelete: s.flagDelete, notes: s.notes, notesSpec: s.notesSpec,
+      allowPrev: allowPrevHere, allowNext: allowNextHere,
+    });
+    return postPrompt(system, user, label, cfg);
+  };
+
+  // One delete-confirmation request: a flag-only prompt (no verify/fill/notes)
+  // so the second model does nothing but judge whether each row is a false
+  // positive. Used by the "delete only when a second model agrees" option.
+  const sendConfirm = (chunk, label, cfg) => {
+    const { system, user } = buildPrompt({
+      rows: chunk.rows, pages: chunk.pages, cols: state.cols,
+      extra: s.extra, verify: false, fill: false, genus: false, species: false,
+      flagDelete: true, notes: false, allowPrev: false, allowNext: false,
+    });
+    return postPrompt(system, user, label, cfg);
+  };
+
   const applyAndRender = (results) => {
     const deletedBefore = counts.deleted;
     applyLlmResults(results, s, counts, meta);
@@ -1847,55 +2059,31 @@ $('#llm-run').addEventListener('click', async () => {
     else renderTable();
   };
 
-  // rowId -> earliest page to include on the next previous-page pass.
-  const needPrev = new Map();
-  const collectPrevRequests = (results, backTo) => {
-    for (const res of results) {
-      if (!res.needPrev || backTo < 1) continue;
-      if (state.rows.some((r) => r.id === res.row)) needPrev.set(res.row, backTo);
-    }
-  };
+  // Run the full multi-pass extraction (initial requests, then previous/next
+  // page walks, then badge retries) over `chunks` using model `cfg`. Rows sent
+  // in this phase are returned; passes track their own page-flip requests.
+  const runPasses = async ({ cfg, chunks, phase }) => {
+    const tag = phase ? `${phase}: ` : '';
+    const localSent = new Set();
+    const needPrev = new Map(); // rowId -> earliest page to include on next prev pass
+    const needNext = new Map(); // rowId -> latest page to include on next next pass
 
-  // rowId -> latest page to include on the next next-page pass.
-  const needNext = new Map();
-  const collectNextRequests = (results, forwardTo) => {
-    for (const res of results) {
-      if (!res.needNext) continue;
-      const m = meta.get(res.row);
-      if (!m || forwardTo > m.fileRec.numPages) continue;
-      if (state.rows.some((r) => r.id === res.row)) needNext.set(res.row, forwardTo);
-    }
-  };
-
-  try {
-    llmStatus('Extracting page text…');
-    const chunks = [];
-    for (const w of work) {
-      const pages = [];
-      for (const num of w.pageNums) {
-        pages.push({ file: w.file.name, page: num, text: await pageTextFor(w.file, num) });
-      }
-      chunks.push(...(perPage ? chunkPerPage(pages, w.rows) : chunkWork(pages, w.rows)));
-    }
-
-    // Up to s.concurrency requests fly at once (1 = the old sequential path);
-    // with a batch delay set, batches of s.concurrency instead go out every
-    // s.batchDelay ms regardless of whether the previous batch finished.
-    // Each worker fetches, then applies its own results synchronously — those
-    // applies can't interleave (single-threaded), so counts/rows stay consistent.
+    // Initial requests. Each worker fetches, then applies its own results
+    // synchronously — those applies can't interleave (single-threaded), so
+    // counts/rows stay consistent.
     let done = 0;
     const total = chunks.length;
     await dispatch(chunks, async (chunk, n) => {
-      const where = perPage ? `${chunk.pages[0].file} p.${chunk.pages[0].page}` : chunk.pages[0].file;
-      const results = await sendChunk(chunk, `Request ${n + 1}`, allowPrev, allowNext);
+      const where = chunk.pages.length === 1 ? `${chunk.pages[0].file} p.${chunk.pages[0].page}` : chunk.pages[0].file;
+      const results = await sendChunk(chunk, `${tag}Request ${n + 1}`, allowPrev, allowNext, cfg);
       done++;
       llmStatus(
-        `${done}/${total} request${total === 1 ? '' : 's'} done` +
+        `${tag}${done}/${total} request${total === 1 ? '' : 's'} done` +
         `${pacingNote()} — ` +
         `${chunk.rows.length} row${chunk.rows.length === 1 ? '' : 's'} from ${where}…`
       );
       if (!results) return;
-      for (const cr of chunk.rows) sentRowIds.add(cr.id);
+      for (const cr of chunk.rows) { localSent.add(cr.id); sentRowIds.add(cr.id); }
       applyAndRender(results);
       if (allowPrev) {
         for (const res of results) {
@@ -1926,22 +2114,26 @@ $('#llm-run').addEventListener('click', async () => {
       }
       needPrev.clear();
       const list = [...groups.values()];
-      let done = 0;
+      let d = 0;
       await dispatch(list, async (g) => {
         const pages = [];
         for (let num = g.backTo; num <= g.page; num++) {
           pages.push({ file: g.fileRec.name, page: num, text: await pageTextFor(g.fileRec, num) });
         }
         const canGoFurther = g.backTo > 1 && pass < MAX_PREV_PASSES;
-        const results = await sendChunk({ pages, rows: g.rows }, `Previous-page pass ${pass}`, canGoFurther);
-        done++;
+        const results = await sendChunk({ pages, rows: g.rows }, `${tag}Previous-page pass ${pass}`, canGoFurther, false, cfg);
+        d++;
         llmStatus(
-          `Previous-page pass ${pass} — ${done}/${list.length} done: ` +
+          `${tag}Previous-page pass ${pass} — ${d}/${list.length} done: ` +
           `pages ${g.backTo}–${g.page} of ${g.fileRec.name} (${g.rows.length} row${g.rows.length === 1 ? '' : 's'})…`
         );
         if (!results) return;
         applyAndRender(results);
-        if (canGoFurther) collectPrevRequests(results, g.backTo - 1);
+        if (canGoFurther) {
+          for (const res of results) {
+            if (res.needPrev && g.backTo - 1 >= 1 && state.rows.some((r) => r.id === res.row)) needPrev.set(res.row, g.backTo - 1);
+          }
+        }
       });
     }
 
@@ -1960,31 +2152,37 @@ $('#llm-run').addEventListener('click', async () => {
       }
       needNext.clear();
       const list = [...groups.values()];
-      let done = 0;
+      let d = 0;
       await dispatch(list, async (g) => {
         const pages = [];
         for (let num = g.page; num <= g.forwardTo; num++) {
           pages.push({ file: g.fileRec.name, page: num, text: await pageTextFor(g.fileRec, num) });
         }
         const canGoFurther = g.forwardTo < g.fileRec.numPages && pass < MAX_NEXT_PASSES;
-        const results = await sendChunk({ pages, rows: g.rows }, `Next-page pass ${pass}`, false, canGoFurther);
-        done++;
+        const results = await sendChunk({ pages, rows: g.rows }, `${tag}Next-page pass ${pass}`, false, canGoFurther, cfg);
+        d++;
         llmStatus(
-          `Next-page pass ${pass} — ${done}/${list.length} done: ` +
+          `${tag}Next-page pass ${pass} — ${d}/${list.length} done: ` +
           `pages ${g.page}–${g.forwardTo} of ${g.fileRec.name} (${g.rows.length} row${g.rows.length === 1 ? '' : 's'})…`
         );
         if (!results) return;
         applyAndRender(results);
-        if (canGoFurther) collectNextRequests(results, g.forwardTo + 1);
+        if (canGoFurther) {
+          for (const res of results) {
+            const m = meta.get(res.row);
+            if (res.needNext && m && g.forwardTo + 1 <= m.fileRec.numPages && state.rows.some((r) => r.id === res.row)) {
+              needNext.set(res.row, g.forwardTo + 1);
+            }
+          }
+        }
       });
     }
 
-    // Badge passes: every row we sent should come back with a badge. Rows the
-    // model dropped (no verdict, no flag) are re-sent — one focused request per
-    // page — until they are badged or we run out of retries.
-    const unbadgedBefore = [...sentRowIds].filter((id) => !hasBadge(id) && state.rows.some((r) => r.id === id));
+    // Badge passes: every row sent in this phase should come back with a badge.
+    // Rows the model dropped (no verdict, no flag) are re-sent — one focused
+    // request per page — until they are badged or we run out of retries.
     for (let pass = 1; pass <= MAX_BADGE_RETRIES && !llmAbort && !stopped; pass++) {
-      const pending = [...sentRowIds].filter((id) => !hasBadge(id) && state.rows.some((r) => r.id === id));
+      const pending = [...localSent].filter((id) => !hasBadge(id) && state.rows.some((r) => r.id === id));
       if (pending.length === 0) break;
       const groups = new Map(); // same file + page -> one request
       for (const id of pending) {
@@ -1995,20 +2193,109 @@ $('#llm-run').addEventListener('click', async () => {
         groups.get(key).rows.push(m.llmRow);
       }
       const list = [...groups.values()];
-      let done = 0;
+      let d = 0;
       await dispatch(list, async (g) => {
         const pages = [{ file: g.fileRec.name, page: g.page, text: await pageTextFor(g.fileRec, g.page) }];
-        const results = await sendChunk({ pages, rows: g.rows }, `Badge retry ${pass}`, false, false);
-        done++;
+        const results = await sendChunk({ pages, rows: g.rows }, `${tag}Badge retry ${pass}`, false, false, cfg);
+        d++;
         llmStatus(
-          `Badge retry ${pass}/${MAX_BADGE_RETRIES} — ${done}/${list.length} done: ` +
+          `${tag}Badge retry ${pass}/${MAX_BADGE_RETRIES} — ${d}/${list.length} done: ` +
           `re-checking ${g.rows.length} row${g.rows.length === 1 ? '' : 's'} the model skipped on ${g.fileRec.name} p.${g.page}…`
         );
         if (!results) return;
         applyAndRender(results);
       });
     }
-    counts.rebadged = unbadgedBefore.filter((id) => hasBadge(id)).length;
+  };
+
+  // Chunk a set of unfinished rows for the retry model, mirroring how the first
+  // pass chunks its work (per-page vs. whole-PDF, coords-only vs. all pages).
+  const buildRetryChunks = async (rowIds) => {
+    const byFile = new Map(); // fileRec -> llmRow[]
+    for (const id of rowIds) {
+      const m = meta.get(id);
+      if (!m) continue;
+      if (!byFile.has(m.fileRec)) byFile.set(m.fileRec, []);
+      byFile.get(m.fileRec).push(m.llmRow);
+    }
+    const out = [];
+    for (const [fileRec, rows] of byFile) {
+      const pages = [];
+      for (const p of fileRec.pages) {
+        if (s.scope !== 'all' && p.dets.length === 0) continue;
+        pages.push({ file: fileRec.name, page: p.num, text: await pageTextFor(fileRec, p.num) });
+      }
+      out.push(...(perPage ? chunkPerPage(pages, rows) : chunkWork(pages, rows)));
+    }
+    return out;
+  };
+
+  try {
+    llmStatus('Extracting page text…');
+    const chunks = [];
+    for (const w of work) {
+      const pages = [];
+      for (const num of w.pageNums) {
+        pages.push({ file: w.file.name, page: num, text: await pageTextFor(w.file, num) });
+      }
+      chunks.push(...(perPage ? chunkPerPage(pages, w.rows) : chunkWork(pages, w.rows)));
+    }
+
+    await runPasses({ cfg: primaryCfg, chunks, phase: '' });
+
+    // Retry with a different model: rows the first model left unfinished are
+    // re-sent to the second model, which runs the same multi-pass extraction.
+    if (s.retry && secondCfg && !llmAbort && !stopped) {
+      const unfinished = [...meta.keys()].filter(isUnfinished);
+      counts.retried = unfinished.length;
+      if (unfinished.length) {
+        llmStatus(`Retrying ${unfinished.length} unfinished row${unfinished.length === 1 ? '' : 's'} with ${secondCfg.model}…`);
+        const retryChunks = await buildRetryChunks(unfinished);
+        await runPasses({ cfg: secondCfg, chunks: retryChunks, phase: `Retry (${secondCfg.model})` });
+        counts.retryFixed = unfinished.filter((id) => !isUnfinished(id)).length;
+      }
+    }
+
+    // Two-model deletion: model 1 only flagged (auto-delete was suppressed);
+    // the second model now reviews each flagged row and any it also rejects is
+    // deleted. Rows it does not confirm keep their flag for manual review.
+    if (s.confirmDelete && secondCfg && !llmAbort && !stopped) {
+      const flagged = [...meta.keys()].filter((id) => {
+        const r = state.rows.find((x) => x.id === id);
+        return r && r.llm && r.llm.del;
+      });
+      counts.confirmChecked = flagged.length;
+      if (flagged.length) {
+        llmStatus(`Second model (${secondCfg.model}) reviewing ${flagged.length} flagged row${flagged.length === 1 ? '' : 's'} before deletion…`);
+        const confirmChunks = await buildRetryChunks(flagged);
+        let cdone = 0;
+        await dispatch(confirmChunks, async (chunk, n) => {
+          const results = await sendConfirm(chunk, `Delete-confirm ${n + 1}`, secondCfg);
+          cdone++;
+          llmStatus(`Delete confirmation — ${cdone}/${confirmChunks.length} request${confirmChunks.length === 1 ? '' : 's'} done…`);
+          if (!results) return;
+          const del = new Set();
+          for (const res of results) {
+            const row = state.rows.find((r) => r.id === res.row);
+            if (!row || !(row.llm && row.llm.del)) continue; // only model-1 flags
+            if (res.del === true) {
+              del.add(row.id);
+              counts.deleted++;
+              const m = meta.get(row.id);
+              counts.deletedInfo.push(
+                `#${m ? m.num : '?'} — ${row.lat ?? '(no lat)'}, ${row.lon ?? '(no lon)'}` +
+                `${m ? ` (${m.file} p.${m.page})` : ''}: ${res.note || 'both models flagged it'}`
+              );
+            } else {
+              counts.confirmKept++;
+              row.llm = { ...row.llm, note: `Second model (${secondCfg.model}) did not confirm this flag — kept for manual review.` };
+            }
+          }
+          if (del.size) { removeRows(del); renderAll(); } else renderTable();
+        });
+      }
+    }
+
     counts.unbadged = [...sentRowIds].filter((id) => !hasBadge(id) && state.rows.some((r) => r.id === id)).length;
   } catch (err) {
     counts.errors.push(err && err.message ? err.message : String(err));
@@ -2027,17 +2314,28 @@ $('#llm-run').addEventListener('click', async () => {
   $('#llm-run').textContent = 'Run';
   const parts = [];
   if (s.verify) parts.push(`verified ${counts.ok} ✓ · ${counts.mismatch} ⚠ mismatch · ${counts.not_found} ? not found`);
-  if (s.fill) parts.push(`${counts.filled} cell${counts.filled === 1 ? '' : 's'} filled`);
+  if (s.fill || s.genus || s.species) parts.push(`${counts.filled} cell${counts.filled === 1 ? '' : 's'} filled`);
   if (s.notes) parts.push(`${counts.noted} note${counts.noted === 1 ? '' : 's'} written`);
   if (prevRows.size) parts.push(`${prevRows.size} row${prevRows.size === 1 ? '' : 's'} re-sent with earlier pages`);
   if (nextRows.size) parts.push(`${nextRows.size} row${nextRows.size === 1 ? '' : 's'} re-sent with later pages`);
-  if (counts.rebadged) parts.push(`${counts.rebadged} skipped row${counts.rebadged === 1 ? '' : 's'} re-sent to get a badge`);
+  if (counts.retried) parts.push(`${counts.retried} unfinished row${counts.retried === 1 ? '' : 's'} retried with ${s.retryModel}${counts.retryFixed ? ` (${counts.retryFixed} resolved)` : ''}`);
   if (counts.unbadged) parts.push(`${counts.unbadged} row${counts.unbadged === 1 ? '' : 's'} still un-badged (run again to retry)`);
   if (s.unsentOnly && skippedSent) parts.push(`${skippedSent} already-sent row${skippedSent === 1 ? '' : 's'} skipped`);
   if (s.flagDelete) {
-    parts.push(s.autoDelete
-      ? `${counts.deleted} row${counts.deleted === 1 ? '' : 's'} auto-deleted`
-      : `${counts.flagged} row${counts.flagged === 1 ? '' : 's'} flagged 🗑 (click a flag or "Delete Flagged" to remove)`);
+    if (s.autoDelete) {
+      parts.push(`${counts.deleted} row${counts.deleted === 1 ? '' : 's'} auto-deleted`);
+    } else if (s.confirmDelete) {
+      parts.push(
+        `${counts.flagged} row${counts.flagged === 1 ? '' : 's'} flagged by model 1; ` +
+        `${counts.deleted} deleted after ${s.retryModel} agreed` +
+        (counts.confirmKept ? `, ${counts.confirmKept} kept where it disagreed` : '') +
+        (counts.flagged - counts.deleted - counts.confirmKept > 0
+          ? `, ${counts.flagged - counts.deleted - counts.confirmKept} still flagged 🗑`
+          : '')
+      );
+    } else {
+      parts.push(`${counts.flagged} row${counts.flagged === 1 ? '' : 's'} flagged 🗑 (click a flag or "Delete Flagged" to remove)`);
+    }
   }
   let msg = `${llmAbort ? 'Stopped early — ' : 'Done — '}${parts.join('; ')}.`;
   if (counts.deletedInfo.length) {
