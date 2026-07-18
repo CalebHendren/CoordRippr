@@ -28,11 +28,14 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   (`41°24'12.2"N`), including common degenerate forms:
   - `o` or `O` substituted for the degree symbol (`12o30'N`)
   - minute/second ticks: `'` `′` `’` `` ` `` `´`, `"` `″` `”`, and doubled ticks
-  - hemisphere as a letter (`N`, `s`) or word (`South`, `West`), leading or
-    trailing
+  - hemisphere as a letter (`N`, `s`, and `O` for Spanish/Portuguese *Oeste* /
+    French *Ouest* = West) or word (`South`, `West`, `Oeste`, `Ouest`), leading
+    or trailing
   - `Lat.` / `Long.` labels, space-separated DMS (`40 26 46 N`), decimal commas
   - pairs split across line breaks, including across a page boundary (latitude at
-    the foot of one page, longitude at the top of the next)
+    the foot of one page, longitude at the top of the next), and a single
+    coordinate wrapped onto an indented continuation line
+    (`104°`⏎`      43'46"W`) without losing the minutes/seconds
 - **Detection intensity** — A toolbar slider (*Strict* to *Everything*) controls
   parser aggressiveness. Lower values suppress numbers that resemble coordinates
   but are not; higher values match bare decimal or integer pairs. Changing it

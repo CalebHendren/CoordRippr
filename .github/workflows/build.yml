@@ -57,6 +57,12 @@ jobs:
   build:
     name: Package (${{ matrix.name }})
     needs: test
+    # Only package installers on main (or a release tag) — not on pull requests.
+    # Tests still run on every PR; this just skips the heavy cross-platform build
+    # until a change reaches main, which is where a release can happen. (A PR's
+    # ref is refs/pull/<n>/merge, so it is excluded; a manual run from main is
+    # not.)
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:

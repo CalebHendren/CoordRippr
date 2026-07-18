@@ -21,16 +21,27 @@ const MINUS = '−–—‐‑‒-';
 const D = `[${DEG_MARKS}]|[oO](?=[\\s ]{0,2}[\\d${MIN_MARKS}NSEWnsew])`;
 const M = `[${MIN_MARKS}]`;
 const S = `[${SEC_MARKS}]|[${MIN_MARKS}]{2}`;
-const SP = `[\\s ]{0,3}`; // may span a line break (coords get wrapped)
+// Horizontal whitespace only (space, tab, NBSP, thin spaces …) — NOT a newline.
+const HS = `[^\\S\\n]`;
+// Gap allowed between the parts of one coordinate token. PDFs wrap a coordinate
+// across a line and the continuation is usually indented, so a token must be
+// able to absorb a single line break plus that indentation — a flat {0,3} budget
+// silently split "104°<newline>   43'46\"" into a bare "104°" (dropping the
+// minutes/seconds). Allow a few same-line spaces, OR one line break bracketed by
+// indentation.
+const SP = `${HS}{0,3}(?:\\n${HS}{0,40})?`;
 const NUM = `\\d{1,3}(?:[.,]\\d+)?`;
+// Hemisphere words, plus the Spanish/Portuguese "Oeste" and French "Ouest"
+// (West). The bare letter "O" for West is handled in the hemisphere character
+// classes below, with a guard in parseToken (see hemiFromLoneO).
 const HEMI_WORD =
-  '[Nn]orth|[Ss]outh|[Ee]ast|[Ww]est|[Ll]at(?:itude)?|[Ll]on(?:g(?:itude)?)?';
+  '[Nn]orth|[Ss]outh|[Ee]ast|[Ww]est|[Oo]este|[Oo]uest|[Ll]at(?:itude)?|[Ll]on(?:g(?:itude)?)?';
 
 // One candidate coordinate token. Everything after the leading number is
 // optional so the net stays wide; parseToken() applies the judgement.
 const TOKEN_SRC =
   `(?:(?<wordpre>${HEMI_WORD})[.:]?${SP})?` +
-  `(?:(?<hemipre>[NSEW])[.]?${SP})?` +
+  `(?:(?<hemipre>[NSEWO])[.]?${SP})?` +
   `(?<sign>[+${MINUS}])?${SP}` +
   `(?<![\\d.,])(?<deg>${NUM})(?![\\d])${SP}` +
   `(?<degmark>${D})?${SP}` +
@@ -38,13 +49,13 @@ const TOKEN_SRC =
   `(?:(?<secmark1>${S})|(?<minmark>${M}))?${SP}` +
   `(?:(?<![\\d.,])(?<sec>\\d{1,2}(?:[.,]\\d+)?)(?![\\d])${SP}(?<secmark2>${S})?)?` +
   `)?` +
-  `(?:${SP}(?:(?<hemipost>[NSEWnsew])(?![A-Za-z0-9])|(?<hemiword>${HEMI_WORD})(?![A-Za-z])))?`;
+  `(?:${SP}(?:(?<hemipost>[NSEWOnsew])(?![A-Za-z0-9])|(?<hemiword>${HEMI_WORD})(?![A-Za-z])))?`;
 
 const TOKEN_REGEX = () => new RegExp(TOKEN_SRC, 'dg');
 
 const HEMI_MAP = {
-  n: 'N', s: 'S', e: 'E', w: 'W',
-  north: 'N', south: 'S', east: 'E', west: 'W',
+  n: 'N', s: 'S', e: 'E', w: 'W', o: 'W', // "O" = Oeste/Ouest (West)
+  north: 'N', south: 'S', east: 'E', west: 'W', oeste: 'W', ouest: 'W',
   lat: null, latitude: null, lon: null, long: null, longitude: null,
 };
 
@@ -114,12 +125,18 @@ function parseToken(m, text, rules) {
   const hasMinMark = !!g.minmark;
   const hasSecMark = !!(g.secmark1 || g.secmark2);
   let hemi = null;
+  let hemiFromLoneO = false; // the West came from a bare letter "O" (Oeste/Ouest)
   for (const h of [g.hemipre, g.hemipost, g.hemiword, g.wordpre]) {
     if (h) {
       const mapped = HEMI_MAP[h.toLowerCase()];
-      if (mapped) { hemi = mapped; break; }
+      if (mapped) { hemi = mapped; hemiFromLoneO = /^[oO]$/.test(h); break; }
     }
   }
+  // A bare "O" is West only on a real coordinate — one carrying a degree mark,
+  // minutes, or a decimal fraction. Otherwise stray text like "5 O." or a lone
+  // capital O would masquerade as a longitude. Spelled-out "Oeste"/"Ouest" is
+  // unambiguous and always kept.
+  if (hemiFromLoneO && !g.degmark && min == null && !/[.,]/.test(g.deg)) { hemi = null; }
   // "lat"/"long" words pin the axis without giving a sign.
   let axisWord = null;
   for (const w0 of [g.hemiword, g.wordpre]) {

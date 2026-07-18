@@ -109,6 +109,41 @@ test('pair split across a line break mid-token', () => {
   close(pairs[0].lat.dd, 41.40333);
 });
 
+// PDF text wraps a coordinate onto an indented continuation line; the token must
+// absorb the newline PLUS the indentation instead of stopping at "104°" and
+// silently dropping the minutes/seconds.
+test('token split across an indented line wrap keeps minutes/seconds', () => {
+  const indent = ' '.repeat(14);
+  const pairs = extractCoordinates(`19°35'47"N, 104°\n${indent}43'46"W here`);
+  assert.equal(pairs.length, 1);
+  close(pairs[0].lat.dd, 19.59639);
+  close(pairs[0].lon.dd, -104.72944); // NOT -104.0 — the 43'46" survived the wrap
+});
+
+test('a pair wrapped onto a deeply indented next line still joins', () => {
+  const indent = ' '.repeat(20);
+  const pairs = extractCoordinates(`19°35'47"N,\n${indent}104°43'46"W`);
+  assert.equal(pairs.length, 1);
+  close(pairs[0].lon.dd, -104.72944);
+});
+
+// "O" = Oeste (Spanish/Portuguese) / Ouest (French) = West. The image that
+// prompted this had "104°43'46\"O"; without the mapping it read +104.7 (East).
+test('letter O and the word Oeste/Ouest read as West', () => {
+  for (const west of [`104°43'46"O`, `104°43'46" O.`, `104°43'46" Oeste`, `104°43'46" Ouest`]) {
+    const pairs = extractCoordinates(`19°35'47"N, ${west}`);
+    assert.equal(pairs.length, 1, west);
+    close(pairs[0].lon.dd, -104.72944);
+  }
+});
+
+// A bare integer followed by a lone "O" is not a coordinate — the West only
+// counts when the token carries a degree mark, minutes, or a decimal fraction.
+test('a lone O after a bare integer is not treated as West', () => {
+  assert.equal(extractCoordinates(`caught 5 O. specimens`).length, 0);
+  assert.equal(extractCoordinates(`19°35'47"N, 104 O`).some((p) => p.lon), false);
+});
+
 test('decimal comma in DMS seconds', () => {
   const pairs = extractCoordinates(`Punkt 41°24'12,2"N 2°10'26,5"E gemessen`);
   assert.equal(pairs.length, 1);
