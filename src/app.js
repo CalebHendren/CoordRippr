@@ -62,6 +62,11 @@ const uid = (p) => `${p}${nextId++}`;
 const emptyCells = () => state.cols.map(() => '');
 const cellVal = (row, i) => (row.cells && row.cells[i]) || '';
 
+// A file's effective detection net: its own per-PDF override when set, else the
+// global toolbar net. Lets a messy PDF be scanned more aggressively (or a clean
+// one more strictly) without changing the net for the rest of the batch.
+const fileIntensity = (file) => (file && file.intensity != null ? file.intensity : state.intensity);
+
 const $ = (sel) => document.querySelector(sel);
 const pagesEl = $('#pages');
 const fileListEl = $('#filelist');
@@ -100,6 +105,7 @@ async function loadFiles(specs) {
     const file = {
       id: uid('f'), name: spec.name, path: spec.path || null,
       doc: null, error: null, numPages: 0, pages: [],
+      intensity: null, // per-PDF net override; null = follow the global net
     };
     state.files.push(file);
     try {
@@ -141,11 +147,12 @@ async function loadFiles(specs) {
 // One page's detections: per-page pairs + pairs straddling the previous-page
 // boundary. `reuse` (rescan) maps location keys to old rows so edits survive.
 function scanPage(file, ctx, prevCtx, reuse = null) {
-  for (const pair of extractCoordinates(ctx.text, state.intensity)) {
+  const net = fileIntensity(file);
+  for (const pair of extractCoordinates(ctx.text, net)) {
     addDetectedRow(file, ctx, pair, reuse);
   }
   if (prevCtx) {
-    for (const pair of extractCrossPage(prevCtx.text, ctx.text, state.intensity)) {
+    for (const pair of extractCrossPage(prevCtx.text, ctx.text, net)) {
       addCrossPageRow(file, prevCtx, ctx, pair, reuse);
     }
   }
@@ -316,11 +323,15 @@ function renderFileList() {
   for (const f of state.files) {
     const nDet = f.pages.reduce((a, p) => a + p.dets.length, 0);
     const el = document.createElement('div');
-    el.className = 'file-entry' + (f.id === state.currentFile ? ' current' : '');
+    const override = f.intensity != null;
+    el.className = 'file-entry' + (f.id === state.currentFile ? ' current' : '') + (override ? ' net-override' : '');
     const meta = f.error
       ? `<span class="err">error: ${escapeHtml(f.error)}</span>`
       : `<span class="${nDet ? 'count' : 'zero'}">${nDet} coord${nDet === 1 ? '' : 's'}</span> · ${f.numPages} p.`;
     el.innerHTML = `<div class="fname">${escapeHtml(f.name)}</div><div class="fmeta">${meta}</div>`;
+    // Per-PDF detection-net override, so a stubborn document can get a more
+    // aggressive net than the rest of the batch.
+    if (!f.error) el.appendChild(buildFileNetControl(f));
     el.addEventListener('click', () => {
       if (state.currentFile !== f.id) {
         state.currentFile = f.id;
@@ -330,6 +341,51 @@ function renderFileList() {
     });
     fileListEl.appendChild(el);
   }
+}
+
+// The per-PDF net picker shown on each file entry. "Auto" follows the global
+// toolbar net; 1–5 pin this PDF to its own level. Changing it triggers an
+// edit-preserving re-scan; only this PDF's net (and so its detections) differs.
+function buildFileNetControl(file) {
+  const label = document.createElement('label');
+  label.className = 'file-net';
+  label.title =
+    'Detection net for this PDF only. "Auto" follows the global Net slider; ' +
+    'pick a higher level to hunt this PDF more aggressively (or a lower one to be stricter).';
+  const span = document.createElement('span');
+  span.className = 'file-net-label';
+  span.textContent = 'Net';
+  const sel = document.createElement('select');
+  sel.className = 'file-net-sel';
+  const opts = [['', `Auto (${intensityName(state.intensity)})`]];
+  for (let l = 1; l <= 5; l++) opts.push([String(l), `${l} · ${intensityName(l)}`]);
+  sel.innerHTML = opts
+    .map(([v, t]) => `<option value="${v}">${escapeHtml(t)}</option>`)
+    .join('');
+  sel.value = file.intensity != null ? String(file.intensity) : '';
+  // Keep the entry's click (switch-current-file) from firing when using the picker.
+  sel.addEventListener('click', (e) => e.stopPropagation());
+  sel.addEventListener('change', (e) => {
+    e.stopPropagation();
+    onFileNetChange(file, sel.value);
+  });
+  label.append(span, sel);
+  return label;
+}
+
+async function onFileNetChange(file, value) {
+  const next = value === '' ? null : Number(value);
+  if (next === file.intensity) return;
+  if (state.busy) {
+    renderFileList(); // revert the picker to the stored value
+    setStatus('Busy — try again when scanning finishes.');
+    return;
+  }
+  file.intensity = next;
+  const desc = next == null
+    ? `${file.name}: net back to Auto (global ${intensityName(state.intensity)})`
+    : `${file.name}: net set to ${next} · ${intensityName(next)}`;
+  await rescanAll(desc);
 }
 
 function escapeHtml(s) {
@@ -1066,14 +1122,15 @@ intensityEl.addEventListener('change', async () => {
   await rescanAll();
 });
 
-// Re-run detection over every loaded PDF with the current intensity. Rows
-// whose detection still matches keep their edits; manual rows are untouched;
-// rows the user deleted stay deleted (suppression keys).
-async function rescanAll() {
+// Re-run detection over every loaded PDF with its effective net (per-PDF
+// override, else the global net). Rows whose detection still matches keep their
+// edits; manual rows are untouched; rows the user deleted stay deleted
+// (suppression keys). `msg` overrides the status line for a per-PDF change.
+async function rescanAll(msg = null) {
   const scannable = state.files.filter((f) => !f.error && f.doc);
   if (scannable.length === 0) { renderTable(); persistSoon(); return; }
   state.busy = true;
-  setStatus(`Re-scanning with the "${intensityName(state.intensity)}" net…`, true);
+  setStatus(msg || `Re-scanning with the "${intensityName(state.intensity)}" net…`, true);
 
   // Location keys of the current detection rows -> row, for edit reuse.
   const reuse = new Map();

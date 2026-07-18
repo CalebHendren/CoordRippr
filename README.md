@@ -38,6 +38,11 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   but are not; higher values match bare decimal or integer pairs. Changing it
   re-scans the loaded PDFs in place, preserving edits, filled columns, and
   deletions.
+  - **Per-PDF net** — each PDF in the file list has its own *Net* picker.
+    *Auto* follows the global slider; pick a level (1–5) to pin just that PDF to
+    a more aggressive (or stricter) net than the rest of the batch — useful for
+    one messy document among clean ones. The override re-scans only that PDF (in
+    place, edits preserved) and is saved with the session.
 - **Page view** — Shows only pages with detections by default (*Show all pages*
   to view the rest). Matches are highlighted; hovering a highlight shows the raw
   matched text; the *Highlights* toggle hides the boxes. Clicking a CSV row
@@ -86,6 +91,10 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   - **Runs in the background** — the window can be closed without stopping a run;
     progress continues in the footer status bar, and reopening LLM Assist shows
     the live status or lets you press *Stop*.
+  - **PDFs to send** — a checkbox list of the loaded PDFs (with *Select all* /
+    *Select none*); only the ticked PDFs' rows and page text are sent, so a run
+    can be limited to select documents. Rowless PDFs are disabled, and each
+    PDF's sent-count is shown so you can see what a previous run already covered.
   - Scope: pages with detected coordinates only, or full PDFs.
   - Concurrency: a bounded request pool of configurable size (`1` = sequential).
     Most effective with **one request per page**, which splits a PDF into many

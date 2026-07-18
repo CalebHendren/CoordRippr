@@ -32,6 +32,7 @@ export function packState(state, nextId) {
       path: f.path || null,
       error: f.error || null,
       numPages: f.numPages,
+      intensity: typeof f.intensity === 'number' ? f.intensity : null, // per-PDF net override
       pages: f.pages.map((p) => ({ num: p.num, w: p.w, h: p.h, dets: [...p.dets] })),
     })),
     dets: [...state.dets.values()].map((d) => ({
@@ -66,6 +67,7 @@ export function unpackState(snap) {
     doc: null,
     error: f.error || null,
     numPages: f.numPages || 0,
+    intensity: typeof f.intensity === 'number' ? f.intensity : null, // per-PDF net override
     pages: (f.pages || []).map((p) => ({
       num: p.num, w: p.w, h: p.h, proxy: null, dets: [...(p.dets || [])],
     })),

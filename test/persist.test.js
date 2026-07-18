@@ -14,7 +14,7 @@ function sampleState() {
   return {
     files: [{
       id: 'f1', name: 'paper.pdf', path: '/tmp/paper.pdf',
-      doc: { fake: true }, error: null, numPages: 3,
+      doc: { fake: true }, error: null, numPages: 3, intensity: 5,
       pages: [
         { num: 1, w: 612, h: 792, proxy: { fake: true }, dets: [] },
         { num: 2, w: 612, h: 792, proxy: { fake: true }, dets: ['d1'] },
@@ -75,6 +75,7 @@ test('pack → unpack round trip preserves the session', () => {
 
   assert.equal(restored.files.length, 1);
   assert.equal(restored.files[0].doc, null); // reattached later by the app
+  assert.equal(restored.files[0].intensity, 5); // per-PDF net override survives
   assert.equal(restored.files[0].pages[1].proxy, null);
   assert.deepEqual(restored.files[0].pages[1].dets, ['d1']);
 
@@ -92,6 +93,14 @@ test('pack → unpack round trip preserves the session', () => {
   assert.equal(restored.rows[1].src, null);
   assert.equal(restored.rows[1].llm, undefined);
   assert.equal(restored.rows[1].llmSent, undefined); // never sent stays unmarked
+});
+
+test('a file without an intensity override unpacks to null (follows the global net)', () => {
+  const restored = unpackState({
+    v: SNAPSHOT_VERSION,
+    files: [{ id: 'f1', name: 'a.pdf', numPages: 1, pages: [{ num: 1, w: 1, h: 1, dets: [] }] }],
+  });
+  assert.equal(restored.files[0].intensity, null);
 });
 
 test('unpackState rejects garbage and fills defaults', () => {
