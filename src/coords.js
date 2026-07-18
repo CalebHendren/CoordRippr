@@ -60,31 +60,43 @@ const HEMI_MAP = {
 };
 
 // ---------------------------------------------------------------------------
-// Intensity: detection-net width (1 = strict … 5 = everything; 3 = default).
+// Intensity: detection-net width (1 = strictest … 7 = everything; 5 = default).
+// The four strictest steps (1–4) give fine control over false positives; the
+// pairing requirement loosens one notch at a time from "both halves strong".
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_INTENSITY = 3;
+export const DEFAULT_INTENSITY = 5;
 
 export const INTENSITY_LABELS = {
-  1: 'Strict — both halves must carry strong evidence (°, hemisphere, …)',
-  2: 'Careful — at least one half must be unambiguous',
-  3: 'Balanced — the classic CoordRippr net (default)',
-  4: 'Wide — single-decimal numbers can pair, bigger gaps allowed',
-  5: 'Everything — even bare integer pairs; expect false positives',
+  1: 'Strictest — both halves strong (°, hemisphere, …); nothing kept alone',
+  2: 'Strict — both halves strong, but a lone strong coordinate is kept',
+  3: 'Firm — a strong half pairs only with another solid (≥ medium) half',
+  4: 'Careful — a strong half may pair with a weaker partner',
+  5: 'Balanced — the classic CoordRippr net (default)',
+  6: 'Wide — single-decimal numbers can pair, bigger gaps allowed',
+  7: 'Everything — even bare integer pairs; expect false positives',
 };
 
 function intensityRules(level) {
-  const l = Math.min(5, Math.max(1, Math.round(Number(level) || DEFAULT_INTENSITY)));
+  const l = Math.min(7, Math.max(1, Math.round(Number(level) || DEFAULT_INTENSITY)));
   return {
     level: l,
     // decimal digits needed for a bare number to count as a weak candidate
-    weakDecimals: l >= 4 ? 1 : 2,
+    weakDecimals: l >= 6 ? 1 : 2,
     // integers with no coordinate evidence at all become 'bare' candidates
-    allowBare: l >= 5,
-    // max chars between the two halves of a pair
-    maxGap: l <= 2 ? 30 : l === 3 ? 40 : l === 4 ? 60 : 80,
-    pairNeeds: l === 1 ? 'both-strong' : l === 2 ? 'one-strong' : 'default',
-    keepLone: l === 1 ? 'none' : l <= 4 ? 'strong' : 'strong+medium',
+    allowBare: l >= 7,
+    // max chars between the two halves of a pair (index by level; [0] unused)
+    maxGap: [0, 22, 26, 30, 36, 44, 64, 84][l],
+    // how strong the two halves must be to pair, strict → loose:
+    //  both-strong → strong+medium → one-strong → default (medium/weak-pair) → any
+    pairNeeds:
+      l <= 2 ? 'both-strong'
+        : l === 3 ? 'strong+medium'
+          : l === 4 ? 'one-strong'
+            : l <= 6 ? 'default'
+              : 'any',
+    // whether an unpaired token survives on its own
+    keepLone: l === 1 ? 'none' : l >= 7 ? 'strong+medium' : 'strong',
   };
 }
 
@@ -245,12 +257,17 @@ export function pairTokens(tokens, text, intensity = DEFAULT_INTENSITY) {
     if (b && !used.has(i + 1) && gapIsClean(text, a, b, rules.maxGap) && compatible(a, b)) {
       // Weak tokens must both be plausible decimal degrees to pair.
       const weakPair = a.strength === 'weak' && b.strength === 'weak';
-      const anyStrong = a.strength === 'strong' || b.strength === 'strong';
+      const isStrong = (t) => t.strength === 'strong';
+      const isMediumUp = (t) => t.strength === 'strong' || t.strength === 'medium';
+      const anyStrong = isStrong(a) || isStrong(b);
       let ok;
-      if (rules.pairNeeds === 'both-strong') ok = a.strength === 'strong' && b.strength === 'strong';
+      if (rules.pairNeeds === 'both-strong') ok = isStrong(a) && isStrong(b);
+      // One strong half, but its partner must still be solid (≥ medium) — no
+      // strong-drags-a-bare-number pairing, which is the usual false-positive.
+      else if (rules.pairNeeds === 'strong+medium') ok = (isStrong(a) && isMediumUp(b)) || (isStrong(b) && isMediumUp(a));
       else if (rules.pairNeeds === 'one-strong') ok = anyStrong;
-      else if (rules.allowBare) ok = true; // level 5: any two candidates may pair
-      else ok = anyStrong || a.strength === 'medium' || b.strength === 'medium' || weakPair;
+      else if (rules.pairNeeds === 'any') ok = true; // everything: any two candidates may pair
+      else ok = anyStrong || a.strength === 'medium' || b.strength === 'medium' || weakPair; // 'default'
       if (ok) {
         let lat = a, lon = b;
         if (a.axis === 'lon' || b.axis === 'lat') { lat = b; lon = a; }
