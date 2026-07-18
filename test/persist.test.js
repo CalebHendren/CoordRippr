@@ -111,7 +111,7 @@ test('unpackState rejects garbage and fills defaults', () => {
   assert.equal(minimal.fmt, 'dd');
   assert.equal(minimal.showHighlights, true); // default on when the field is absent
   assert.equal(minimal.zoom, 1.4);
-  assert.equal(minimal.intensity, 3);
+  assert.equal(minimal.intensity, 5); // Balanced default when the field is absent
   assert.equal(minimal.nextId, 1);
   assert.deepEqual(minimal.cols, ['Genus', 'Species']);
   assert.equal(minimal.notesOn, false);

@@ -95,7 +95,7 @@ export function unpackState(snap) {
     showAll: !!snap.showAll,
     showHighlights: snap.showHighlights !== false, // default on when the field is absent
     zoom: typeof snap.zoom === 'number' ? snap.zoom : 1.4,
-    intensity: typeof snap.intensity === 'number' ? snap.intensity : 3,
+    intensity: typeof snap.intensity === 'number' ? snap.intensity : 5, // Balanced (DEFAULT_INTENSITY)
     currentFile: snap.currentFile ?? null,
     suppressed: new Set(Array.isArray(snap.suppressed) ? snap.suppressed : []),
     files,

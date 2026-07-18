@@ -28,18 +28,30 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   (`41°24'12.2"N`), including common degenerate forms:
   - `o` or `O` substituted for the degree symbol (`12o30'N`)
   - minute/second ticks: `'` `′` `’` `` ` `` `´`, `"` `″` `”`, and doubled ticks
-  - hemisphere as a letter (`N`, `s`) or word (`South`, `West`), leading or
-    trailing
+  - hemisphere as a letter (`N`, `s`, and `O` for Spanish/Portuguese *Oeste* /
+    French *Ouest* = West) or word (`South`, `West`, `Oeste`, `Ouest`), leading
+    or trailing
   - `Lat.` / `Long.` labels, space-separated DMS (`40 26 46 N`), decimal commas
   - pairs split across line breaks, including across a page boundary (latitude at
-    the foot of one page, longitude at the top of the next)
-- **Detection intensity** — A toolbar slider (*Strict* to *Everything*) controls
-  parser aggressiveness. Lower values suppress numbers that resemble coordinates
-  but are not; higher values match bare decimal or integer pairs. Changing it
-  re-scans the loaded PDFs in place, preserving edits, filled columns, and
-  deletions.
+    the foot of one page, longitude at the top of the next), and a single
+    coordinate wrapped onto an indented continuation line
+    (`104°`⏎`      43'46"W`) without losing the minutes/seconds
+- **Detection intensity** — A toolbar slider controls parser aggressiveness over
+  a seven-step net, *Strictest* (1) to *Everything* (7), with **Balanced** (5)
+  the default. The four strictest steps give fine control over false positives —
+  the pairing requirement loosens one notch at a time:
+  1. **Strictest** — both halves strong (°, hemisphere, …); nothing kept alone
+  2. **Strict** — both halves strong, but a lone strong coordinate is kept
+  3. **Firm** — a strong half pairs only with another solid (≥ medium) half
+  4. **Careful** — a strong half may pair with a weaker partner
+  5. **Balanced** — the classic CoordRippr net (default)
+  6. **Wide** — single-decimal numbers can pair, bigger gaps allowed
+  7. **Everything** — even bare integer pairs; expect false positives
+
+  Changing it re-scans the loaded PDFs in place, preserving edits, filled
+  columns, and deletions.
   - **Per-PDF net** — each PDF in the file list has its own *Net* picker.
-    *Auto* follows the global slider; pick a level (1–5) to pin just that PDF to
+    *Auto* follows the global slider; pick a level (1–7) to pin just that PDF to
     a more aggressive (or stricter) net than the rest of the batch — useful for
     one messy document among clean ones. The override re-scans only that PDF (in
     place, edits preserved) and is saved with the session.

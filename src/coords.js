@@ -21,16 +21,27 @@ const MINUS = '−–—‐‑‒-';
 const D = `[${DEG_MARKS}]|[oO](?=[\\s ]{0,2}[\\d${MIN_MARKS}NSEWnsew])`;
 const M = `[${MIN_MARKS}]`;
 const S = `[${SEC_MARKS}]|[${MIN_MARKS}]{2}`;
-const SP = `[\\s ]{0,3}`; // may span a line break (coords get wrapped)
+// Horizontal whitespace only (space, tab, NBSP, thin spaces …) — NOT a newline.
+const HS = `[^\\S\\n]`;
+// Gap allowed between the parts of one coordinate token. PDFs wrap a coordinate
+// across a line and the continuation is usually indented, so a token must be
+// able to absorb a single line break plus that indentation — a flat {0,3} budget
+// silently split "104°<newline>   43'46\"" into a bare "104°" (dropping the
+// minutes/seconds). Allow a few same-line spaces, OR one line break bracketed by
+// indentation.
+const SP = `${HS}{0,3}(?:\\n${HS}{0,40})?`;
 const NUM = `\\d{1,3}(?:[.,]\\d+)?`;
+// Hemisphere words, plus the Spanish/Portuguese "Oeste" and French "Ouest"
+// (West). The bare letter "O" for West is handled in the hemisphere character
+// classes below, with a guard in parseToken (see hemiFromLoneO).
 const HEMI_WORD =
-  '[Nn]orth|[Ss]outh|[Ee]ast|[Ww]est|[Ll]at(?:itude)?|[Ll]on(?:g(?:itude)?)?';
+  '[Nn]orth|[Ss]outh|[Ee]ast|[Ww]est|[Oo]este|[Oo]uest|[Ll]at(?:itude)?|[Ll]on(?:g(?:itude)?)?';
 
 // One candidate coordinate token. Everything after the leading number is
 // optional so the net stays wide; parseToken() applies the judgement.
 const TOKEN_SRC =
   `(?:(?<wordpre>${HEMI_WORD})[.:]?${SP})?` +
-  `(?:(?<hemipre>[NSEW])[.]?${SP})?` +
+  `(?:(?<hemipre>[NSEWO])[.]?${SP})?` +
   `(?<sign>[+${MINUS}])?${SP}` +
   `(?<![\\d.,])(?<deg>${NUM})(?![\\d])${SP}` +
   `(?<degmark>${D})?${SP}` +
@@ -38,42 +49,54 @@ const TOKEN_SRC =
   `(?:(?<secmark1>${S})|(?<minmark>${M}))?${SP}` +
   `(?:(?<![\\d.,])(?<sec>\\d{1,2}(?:[.,]\\d+)?)(?![\\d])${SP}(?<secmark2>${S})?)?` +
   `)?` +
-  `(?:${SP}(?:(?<hemipost>[NSEWnsew])(?![A-Za-z0-9])|(?<hemiword>${HEMI_WORD})(?![A-Za-z])))?`;
+  `(?:${SP}(?:(?<hemipost>[NSEWOnsew])(?![A-Za-z0-9])|(?<hemiword>${HEMI_WORD})(?![A-Za-z])))?`;
 
 const TOKEN_REGEX = () => new RegExp(TOKEN_SRC, 'dg');
 
 const HEMI_MAP = {
-  n: 'N', s: 'S', e: 'E', w: 'W',
-  north: 'N', south: 'S', east: 'E', west: 'W',
+  n: 'N', s: 'S', e: 'E', w: 'W', o: 'W', // "O" = Oeste/Ouest (West)
+  north: 'N', south: 'S', east: 'E', west: 'W', oeste: 'W', ouest: 'W',
   lat: null, latitude: null, lon: null, long: null, longitude: null,
 };
 
 // ---------------------------------------------------------------------------
-// Intensity: detection-net width (1 = strict … 5 = everything; 3 = default).
+// Intensity: detection-net width (1 = strictest … 7 = everything; 5 = default).
+// The four strictest steps (1–4) give fine control over false positives; the
+// pairing requirement loosens one notch at a time from "both halves strong".
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_INTENSITY = 3;
+export const DEFAULT_INTENSITY = 5;
 
 export const INTENSITY_LABELS = {
-  1: 'Strict — both halves must carry strong evidence (°, hemisphere, …)',
-  2: 'Careful — at least one half must be unambiguous',
-  3: 'Balanced — the classic CoordRippr net (default)',
-  4: 'Wide — single-decimal numbers can pair, bigger gaps allowed',
-  5: 'Everything — even bare integer pairs; expect false positives',
+  1: 'Strictest — both halves strong (°, hemisphere, …); nothing kept alone',
+  2: 'Strict — both halves strong, but a lone strong coordinate is kept',
+  3: 'Firm — a strong half pairs only with another solid (≥ medium) half',
+  4: 'Careful — a strong half may pair with a weaker partner',
+  5: 'Balanced — the classic CoordRippr net (default)',
+  6: 'Wide — single-decimal numbers can pair, bigger gaps allowed',
+  7: 'Everything — even bare integer pairs; expect false positives',
 };
 
 function intensityRules(level) {
-  const l = Math.min(5, Math.max(1, Math.round(Number(level) || DEFAULT_INTENSITY)));
+  const l = Math.min(7, Math.max(1, Math.round(Number(level) || DEFAULT_INTENSITY)));
   return {
     level: l,
     // decimal digits needed for a bare number to count as a weak candidate
-    weakDecimals: l >= 4 ? 1 : 2,
+    weakDecimals: l >= 6 ? 1 : 2,
     // integers with no coordinate evidence at all become 'bare' candidates
-    allowBare: l >= 5,
-    // max chars between the two halves of a pair
-    maxGap: l <= 2 ? 30 : l === 3 ? 40 : l === 4 ? 60 : 80,
-    pairNeeds: l === 1 ? 'both-strong' : l === 2 ? 'one-strong' : 'default',
-    keepLone: l === 1 ? 'none' : l <= 4 ? 'strong' : 'strong+medium',
+    allowBare: l >= 7,
+    // max chars between the two halves of a pair (index by level; [0] unused)
+    maxGap: [0, 22, 26, 30, 36, 44, 64, 84][l],
+    // how strong the two halves must be to pair, strict → loose:
+    //  both-strong → strong+medium → one-strong → default (medium/weak-pair) → any
+    pairNeeds:
+      l <= 2 ? 'both-strong'
+        : l === 3 ? 'strong+medium'
+          : l === 4 ? 'one-strong'
+            : l <= 6 ? 'default'
+              : 'any',
+    // whether an unpaired token survives on its own
+    keepLone: l === 1 ? 'none' : l >= 7 ? 'strong+medium' : 'strong',
   };
 }
 
@@ -114,12 +137,18 @@ function parseToken(m, text, rules) {
   const hasMinMark = !!g.minmark;
   const hasSecMark = !!(g.secmark1 || g.secmark2);
   let hemi = null;
+  let hemiFromLoneO = false; // the West came from a bare letter "O" (Oeste/Ouest)
   for (const h of [g.hemipre, g.hemipost, g.hemiword, g.wordpre]) {
     if (h) {
       const mapped = HEMI_MAP[h.toLowerCase()];
-      if (mapped) { hemi = mapped; break; }
+      if (mapped) { hemi = mapped; hemiFromLoneO = /^[oO]$/.test(h); break; }
     }
   }
+  // A bare "O" is West only on a real coordinate — one carrying a degree mark,
+  // minutes, or a decimal fraction. Otherwise stray text like "5 O." or a lone
+  // capital O would masquerade as a longitude. Spelled-out "Oeste"/"Ouest" is
+  // unambiguous and always kept.
+  if (hemiFromLoneO && !g.degmark && min == null && !/[.,]/.test(g.deg)) { hemi = null; }
   // "lat"/"long" words pin the axis without giving a sign.
   let axisWord = null;
   for (const w0 of [g.hemiword, g.wordpre]) {
@@ -228,12 +257,17 @@ export function pairTokens(tokens, text, intensity = DEFAULT_INTENSITY) {
     if (b && !used.has(i + 1) && gapIsClean(text, a, b, rules.maxGap) && compatible(a, b)) {
       // Weak tokens must both be plausible decimal degrees to pair.
       const weakPair = a.strength === 'weak' && b.strength === 'weak';
-      const anyStrong = a.strength === 'strong' || b.strength === 'strong';
+      const isStrong = (t) => t.strength === 'strong';
+      const isMediumUp = (t) => t.strength === 'strong' || t.strength === 'medium';
+      const anyStrong = isStrong(a) || isStrong(b);
       let ok;
-      if (rules.pairNeeds === 'both-strong') ok = a.strength === 'strong' && b.strength === 'strong';
+      if (rules.pairNeeds === 'both-strong') ok = isStrong(a) && isStrong(b);
+      // One strong half, but its partner must still be solid (≥ medium) — no
+      // strong-drags-a-bare-number pairing, which is the usual false-positive.
+      else if (rules.pairNeeds === 'strong+medium') ok = (isStrong(a) && isMediumUp(b)) || (isStrong(b) && isMediumUp(a));
       else if (rules.pairNeeds === 'one-strong') ok = anyStrong;
-      else if (rules.allowBare) ok = true; // level 5: any two candidates may pair
-      else ok = anyStrong || a.strength === 'medium' || b.strength === 'medium' || weakPair;
+      else if (rules.pairNeeds === 'any') ok = true; // everything: any two candidates may pair
+      else ok = anyStrong || a.strength === 'medium' || b.strength === 'medium' || weakPair; // 'default'
       if (ok) {
         let lat = a, lon = b;
         if (a.axis === 'lon' || b.axis === 'lat') { lat = b; lon = a; }

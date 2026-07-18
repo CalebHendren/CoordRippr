@@ -109,6 +109,41 @@ test('pair split across a line break mid-token', () => {
   close(pairs[0].lat.dd, 41.40333);
 });
 
+// PDF text wraps a coordinate onto an indented continuation line; the token must
+// absorb the newline PLUS the indentation instead of stopping at "104°" and
+// silently dropping the minutes/seconds.
+test('token split across an indented line wrap keeps minutes/seconds', () => {
+  const indent = ' '.repeat(14);
+  const pairs = extractCoordinates(`19°35'47"N, 104°\n${indent}43'46"W here`);
+  assert.equal(pairs.length, 1);
+  close(pairs[0].lat.dd, 19.59639);
+  close(pairs[0].lon.dd, -104.72944); // NOT -104.0 — the 43'46" survived the wrap
+});
+
+test('a pair wrapped onto a deeply indented next line still joins', () => {
+  const indent = ' '.repeat(20);
+  const pairs = extractCoordinates(`19°35'47"N,\n${indent}104°43'46"W`);
+  assert.equal(pairs.length, 1);
+  close(pairs[0].lon.dd, -104.72944);
+});
+
+// "O" = Oeste (Spanish/Portuguese) / Ouest (French) = West. The image that
+// prompted this had "104°43'46\"O"; without the mapping it read +104.7 (East).
+test('letter O and the word Oeste/Ouest read as West', () => {
+  for (const west of [`104°43'46"O`, `104°43'46" O.`, `104°43'46" Oeste`, `104°43'46" Ouest`]) {
+    const pairs = extractCoordinates(`19°35'47"N, ${west}`);
+    assert.equal(pairs.length, 1, west);
+    close(pairs[0].lon.dd, -104.72944);
+  }
+});
+
+// A bare integer followed by a lone "O" is not a coordinate — the West only
+// counts when the token carries a degree mark, minutes, or a decimal fraction.
+test('a lone O after a bare integer is not treated as West', () => {
+  assert.equal(extractCoordinates(`caught 5 O. specimens`).length, 0);
+  assert.equal(extractCoordinates(`19°35'47"N, 104 O`).some((p) => p.lon), false);
+});
+
 test('decimal comma in DMS seconds', () => {
   const pairs = extractCoordinates(`Punkt 41°24'12,2"N 2°10'26,5"E gemessen`);
   assert.equal(pairs.length, 1);
@@ -169,46 +204,64 @@ test('multiple pairs in one block', () => {
   assert.equal(pairs.length, 2);
 });
 
-// --- intensity levels ------------------------------------------------------
+// --- intensity levels (1 strictest … 7 everything; 5 = default) -------------
 
-test('intensity 1 requires strong evidence on both halves', () => {
-  // Bare decimal pair: fine at default, dropped at strict.
-  assert.equal(extractCoordinates(`Barcelona (41.40338, 2.17403)`, 1).length, 0);
-  assert.equal(extractCoordinates(`Barcelona (41.40338, 2.17403)`, 3).length, 1);
-  // Both halves strong: kept even at strict.
+test('levels 1–2 require strong evidence on both halves', () => {
+  // Bare decimal pair (weak+weak): dropped through the strict end, kept at the
+  // Balanced default.
+  for (const l of [1, 2, 3, 4]) assert.equal(extractCoordinates(`Barcelona (41.40338, 2.17403)`, l).length, 0, `level ${l}`);
+  assert.equal(extractCoordinates(`Barcelona (41.40338, 2.17403)`, 5).length, 1);
+  // Both halves strong: kept even at the strictest level.
   assert.equal(extractCoordinates(`41°24'12"N 2°10'26"E`, 1).length, 1);
-  // Lone strong token: dropped at strict, kept from level 2 up.
+  // Lone strong token: dropped at level 1 (nothing kept alone), kept from 2 up.
   assert.equal(extractCoordinates(`latitude of 41°24'12"N only`, 1).length, 0);
   assert.equal(extractCoordinates(`latitude of 41°24'12"N only`, 2).length, 1);
 });
 
-test('intensity 2 needs one unambiguous half to pair', () => {
-  assert.equal(extractCoordinates(`Barcelona (41.40338, 2.17403)`, 2).length, 0);
-  assert.equal(extractCoordinates(`stations at 33.8688 S, 151.2093 E`, 2).length, 1);
+test('level 3 (Firm) needs the partner to be solid; level 4 (Careful) does not', () => {
+  // One strong half (DMS+hemisphere) + one weak half (bare 2-decimal number).
+  const text = `41°24'12"N, 2.17403 recorded`;
+  // Firm: the weak longitude is not pulled in — the strong latitude survives
+  // alone (lone-strong is kept), but with no partner.
+  const firm = extractCoordinates(text, 3);
+  assert.equal(firm.length, 1);
+  close(firm[0].lat.dd, 41.40333);
+  assert.equal(firm[0].lon, null);
+  // Careful: a strong half drags the weak partner into a full pair.
+  const careful = extractCoordinates(text, 4);
+  assert.equal(careful.length, 1);
+  close(careful[0].lat.dd, 41.40333);
+  close(careful[0].lon.dd, 2.17403);
 });
 
-test('intensity 4 pairs single-decimal numbers', () => {
+test('level 5 (Balanced) pairs two weak decimals; level 4 does not', () => {
+  const text = `Barcelona (41.40338, 2.17403)`;
+  assert.equal(extractCoordinates(text, 4).length, 0);
+  assert.equal(extractCoordinates(text, 5).length, 1);
+});
+
+test('level 6 (Wide) pairs single-decimal numbers', () => {
   const text = `the site (41.4, 2.2) was sampled`;
-  assert.equal(extractCoordinates(text, 3).length, 0); // needs 2 decimals at default
-  const wide = extractCoordinates(text, 4);
+  assert.equal(extractCoordinates(text, 5).length, 0); // needs 2 decimals at default
+  const wide = extractCoordinates(text, 6);
   assert.equal(wide.length, 1);
   close(wide[0].lat.dd, 41.4);
 });
 
-test('intensity 5 pairs bare integers', () => {
-  const pairs = extractCoordinates(`grid cell 41, 2 in the survey`, 5);
+test('level 7 (Everything) pairs bare integers', () => {
+  const pairs = extractCoordinates(`grid cell 41, 2 in the survey`, 7);
   assert.equal(pairs.length, 1);
   close(pairs[0].lat.dd, 41);
   close(pairs[0].lon.dd, 2);
   // …which stays rejected at every lower level.
-  assert.equal(extractCoordinates(`grid cell 41, 2 in the survey`, 4).length, 0);
+  assert.equal(extractCoordinates(`grid cell 41, 2 in the survey`, 6).length, 0);
 });
 
-test('default intensity is unchanged historical behaviour', () => {
-  assert.equal(
-    extractCoordinates(`In 2019 we sampled 45 sites over 12 days.`).length,
-    extractCoordinates(`In 2019 we sampled 45 sites over 12 days.`, 3).length
-  );
+test('default intensity matches the Balanced net (level 5)', () => {
+  const text = `In 2019 we sampled 45 sites over 12 days.`;
+  assert.equal(extractCoordinates(text).length, extractCoordinates(text, 5).length);
+  // The classic net still finds a bare 2-decimal pair.
+  assert.equal(extractCoordinates(`Barcelona (41.40338, 2.17403)`).length, 1);
 });
 
 // --- cross-page pairs -------------------------------------------------------

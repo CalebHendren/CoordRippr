@@ -43,7 +43,7 @@ const state = {
   showAll: false,
   showHighlights: true,
   zoom: 1.4,
-  intensity: DEFAULT_INTENSITY, // regex net width, 1 (strict) … 5 (everything)
+  intensity: DEFAULT_INTENSITY, // regex net width, 1 (strictest) … 7 (everything)
   currentFile: null,
   suppressed: new Set(), // location keys of deleted detections (survive re-scans)
   selected: new Set(),
@@ -344,7 +344,7 @@ function renderFileList() {
 }
 
 // The per-PDF net picker shown on each file entry. "Auto" follows the global
-// toolbar net; 1–5 pin this PDF to its own level. Changing it triggers an
+// toolbar net; 1–7 pin this PDF to its own level. Changing it triggers an
 // edit-preserving re-scan; only this PDF's net (and so its detections) differs.
 function buildFileNetControl(file) {
   const label = document.createElement('label');
@@ -358,7 +358,7 @@ function buildFileNetControl(file) {
   const sel = document.createElement('select');
   sel.className = 'file-net-sel';
   const opts = [['', `Auto (${intensityName(state.intensity)})`]];
-  for (let l = 1; l <= 5; l++) opts.push([String(l), `${l} · ${intensityName(l)}`]);
+  for (let l = 1; l <= 7; l++) opts.push([String(l), `${l} · ${intensityName(l)}`]);
   sel.innerHTML = opts
     .map(([v, t]) => `<option value="${v}">${escapeHtml(t)}</option>`)
     .join('');
