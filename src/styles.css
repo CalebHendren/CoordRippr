@@ -231,7 +231,7 @@ dialog h2 { margin: 0 0 10px; font-size: 16px; }
 dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 8px 0 0; padding: 0; }
 
 /* ---------- LLM two-model delete-confirmation option ---------- */
-.llm-grid fieldset label.confirm-opt { margin-left: 18px; }
+.llm-grid fieldset label.confirm-opt { margin-left: 18px; color: var(--danger); }
 .llm-grid fieldset label.confirm-opt input:disabled ~ * { opacity: 0.6; }
 .confirm-note { flex-basis: 100%; margin: 2px 0 0 18px; font-size: 11px; line-height: 1.45; }
 
