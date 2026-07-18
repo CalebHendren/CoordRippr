@@ -148,6 +148,19 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
 .file-entry .fmeta .count { color: var(--ok); }
 .file-entry .fmeta .zero { color: var(--muted); }
 .file-entry .fmeta .err { color: var(--danger); }
+.file-entry.net-override { border-color: var(--accent-dim); }
+.file-net {
+  display: flex; align-items: center; gap: 4px; margin-top: 4px;
+  font-size: 11px; color: var(--muted);
+}
+.file-net-label { flex: none; }
+.file-net-sel {
+  flex: 1; min-width: 0; font-size: 11px; padding: 1px 2px;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.file-entry.net-override .file-net-label,
+.file-entry.net-override .file-net-sel { color: var(--accent); border-color: var(--accent-dim); }
 
 #pages-scroll { flex: 1; overflow: auto; background: #0b0e14; position: relative; }
 #pages { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 18px; }
