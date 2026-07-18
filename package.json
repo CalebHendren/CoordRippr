@@ -2,7 +2,7 @@
   "name": "coordrippr",
   "productName": "CoordRippr",
   "//version": "Bumping by 0.1 goes to 0.x.0 (minor +1, patch reset to 0); bumping by 0.0.1 goes to 0.0.x (patch +1).",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Extract coordinate data from PDFs into clean CSV",
   "main": "main.js",
   "type": "module",
@@ -49,7 +49,9 @@
       "!**/*.map"
     ],
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "build/icon.png"
     },
     "nsis": {
@@ -62,12 +64,18 @@
       "runAfterFinish": true
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "icon": "build/icon.png",
       "category": "public.app-category.productivity"
     },
     "linux": {
-      "target": ["deb", "rpm", "pacman"],
+      "target": [
+        "deb",
+        "rpm",
+        "pacman"
+      ],
       "icon": "build/icon.png",
       "category": "Office",
       "maintainer": "Caleb Hendren <calebahendren@gmail.com>",
