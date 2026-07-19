@@ -209,6 +209,12 @@
           </div>
         </fieldset>
 
+        <fieldset class="wide" id="llm-advanced-fs">
+          <legend>Advanced</legend>
+          <label title="Off by default: requests are sent exactly as before, letting the provider use its own default temperature. Turn this on to set the sampling temperature yourself. A lower value makes the model follow the verification instructions more closely, so fewer rows come back without a ✓ / ⚠ / ? badge; the default still lets it extract genus/species and ask for an adjacent page when needed. Applies to both the primary and the second model."><input type="checkbox" id="llm-temp-on" /> Set the model temperature</label>
+          <label class="llm-temp" title="0 = most deterministic (closest instruction-following); higher = more varied. OpenAI-compatible providers accept up to 2; Anthropic (Claude) caps at 1, and some current models reject the field entirely.">temperature <input type="number" id="llm-temp" min="0" max="2" step="0.05" value="0.2" disabled /></label>
+        </fieldset>
+
         <label class="wide">Add to the prompt <span class="muted">(extra instructions — what other columns mean, what to look for, …)</span>
           <textarea id="llm-extra" rows="3" placeholder="e.g. Only consider organisms observed at the coordinate, not species merely cited from other studies."></textarea>
         </label>

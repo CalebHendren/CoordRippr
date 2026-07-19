@@ -19,6 +19,9 @@ import {
   MAX_CONCURRENCY,
   MAX_BATCH_DELAY_MS,
   MAX_ROWS_PER_CHUNK,
+  DEFAULT_TEMPERATURE,
+  MIN_TEMPERATURE,
+  MAX_TEMPERATURE,
 } from '../src/llm.js';
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
@@ -63,6 +66,42 @@ test('openai-compatible request shape (covers Chinese providers)', () => {
     assert.equal(body.messages[0].role, 'system', id);
     assert.equal(body.messages[1].role, 'user', id);
   }
+});
+
+test('temperature is omitted unless a finite number is passed', () => {
+  // Default: no temperature field at all (byte-for-byte the old behaviour).
+  for (const kind of ['anthropic', 'openai']) {
+    const req = buildRequest({ kind, url: 'https://x/y', model: 'm', apiKey: 'k', system: 's', user: 'u' });
+    assert.equal(JSON.parse(req.body).temperature, undefined, kind);
+  }
+  // Non-finite values are treated as "unset".
+  for (const bad of [NaN, Infinity, undefined, null, 'warm']) {
+    const req = buildRequest({ kind: 'openai', url: 'https://x/y', model: 'm', apiKey: 'k', system: 's', user: 'u', temperature: bad });
+    assert.equal(JSON.parse(req.body).temperature, undefined, String(bad));
+  }
+});
+
+test('temperature rides along when set (both wire formats, including 0)', () => {
+  const anth = buildRequest({
+    kind: 'anthropic', url: 'https://x/y', model: 'm', apiKey: 'k', system: 's', user: 'u', temperature: 0.2,
+  });
+  assert.equal(JSON.parse(anth.body).temperature, 0.2);
+  const oai = buildRequest({
+    kind: 'openai', url: 'https://x/y', model: 'm', apiKey: 'k', system: 's', user: 'u', temperature: 0.2,
+  });
+  assert.equal(JSON.parse(oai.body).temperature, 0.2);
+  // 0 is a real, deliberate value — it must not be dropped as falsy.
+  const zero = buildRequest({
+    kind: 'openai', url: 'https://x/y', model: 'm', apiKey: 'k', system: 's', user: 'u', temperature: 0,
+  });
+  assert.equal(JSON.parse(zero.body).temperature, 0);
+});
+
+test('temperature constants are sane defaults', () => {
+  assert.ok(DEFAULT_TEMPERATURE >= MIN_TEMPERATURE && DEFAULT_TEMPERATURE <= MAX_TEMPERATURE);
+  // Low enough to pin instruction-following, above the fully-greedy floor.
+  assert.ok(DEFAULT_TEMPERATURE > MIN_TEMPERATURE && DEFAULT_TEMPERATURE <= 0.5);
+  assert.equal(MIN_TEMPERATURE, 0);
 });
 
 test('custom endpoint without key omits auth header', () => {
