@@ -161,6 +161,26 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
 }
 .file-entry.net-override .file-net-label,
 .file-entry.net-override .file-net-sel { color: var(--accent); border-color: var(--accent-dim); }
+.file-controls { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.file-controls .file-net { flex: 1; min-width: 0; margin-top: 0; }
+.file-hide {
+  flex: none; font-size: 11px; padding: 1px 7px; cursor: pointer;
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.file-hide:hover { color: var(--text); border-color: var(--accent-dim); }
+/* A set-aside PDF, shown only inside the expanded "hidden" disclosure. */
+.file-entry.hidden-file { opacity: 0.7; cursor: default; }
+.file-entry.hidden-file:hover { opacity: 1; background: transparent; }
+.file-entry.hidden-file .fname { text-decoration: line-through; }
+/* Collapsed disclosure that keeps hidden PDFs out of the main list. */
+.hidden-section { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
+.hidden-toggle {
+  width: 100%; text-align: left; cursor: pointer; font-size: 11px;
+  color: var(--muted); background: none; border: none;
+  padding: 3px 4px; border-radius: 4px;
+}
+.hidden-toggle:hover { color: var(--text); background: var(--panel-2); }
 
 #pages-scroll { flex: 1; overflow: auto; background: #0b0e14; position: relative; }
 #pages { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 18px; }

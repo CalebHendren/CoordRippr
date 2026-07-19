@@ -33,6 +33,7 @@ export function packState(state, nextId) {
       error: f.error || null,
       numPages: f.numPages,
       intensity: typeof f.intensity === 'number' ? f.intensity : null, // per-PDF net override
+      hidden: !!f.hidden, // user set this PDF aside (excluded from view/CSV, kept for un-hiding)
       pages: f.pages.map((p) => ({ num: p.num, w: p.w, h: p.h, dets: [...p.dets] })),
     })),
     dets: [...state.dets.values()].map((d) => ({
@@ -68,6 +69,7 @@ export function unpackState(snap) {
     error: f.error || null,
     numPages: f.numPages || 0,
     intensity: typeof f.intensity === 'number' ? f.intensity : null, // per-PDF net override
+    hidden: !!f.hidden, // set-aside PDFs stay set aside across reloads
     pages: (f.pages || []).map((p) => ({
       num: p.num, w: p.w, h: p.h, proxy: null, dets: [...(p.dets || [])],
     })),
