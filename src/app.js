@@ -330,47 +330,82 @@ function renderAll() {
 // File list
 // ---------------------------------------------------------------------------
 
+// Whether the collapsed "hidden PDFs" disclosure at the bottom of the file list
+// is expanded. Collapsed by default so set-aside PDFs stay out of sight until
+// the user wants to restore one.
+let hiddenSectionOpen = false;
+
 function renderFileList() {
   fileListEl.innerHTML = '';
   if (state.files.length === 0) {
     fileListEl.innerHTML = '<div class="empty-hint muted">No PDFs loaded</div>';
     return;
   }
-  for (const f of state.files) {
-    const nDet = f.pages.reduce((a, p) => a + p.dets.length, 0);
-    const el = document.createElement('div');
-    const override = f.intensity != null;
-    el.className = 'file-entry'
-      + (f.id === state.currentFile ? ' current' : '')
-      + (override ? ' net-override' : '')
-      + (f.hidden ? ' hidden-file' : '');
-    const meta = f.error
-      ? `<span class="err">error: ${escapeHtml(f.error)}</span>`
-      : `<span class="${nDet ? 'count' : 'zero'}">${nDet} coord${nDet === 1 ? '' : 's'}</span> · ${f.numPages} p.`
-        + (f.hidden ? ' · <span class="hidden-tag">hidden</span>' : '');
-    el.innerHTML = `<div class="fname">${escapeHtml(f.name)}</div><div class="fmeta">${meta}</div>`;
-    // Controls row: the per-PDF detection-net override (visible files only, so a
-    // stubborn document can get a more aggressive net than the batch) plus a
-    // Hide/Show toggle to set the PDF aside or bring it back.
-    if (!f.error) {
-      const controls = document.createElement('div');
-      controls.className = 'file-controls';
-      if (!f.hidden) controls.appendChild(buildFileNetControl(f));
-      controls.appendChild(buildFileHideControl(f));
-      el.appendChild(controls);
-    }
-    // A visible entry becomes the viewed PDF on click; a hidden entry is set
-    // aside, so only its Show button (which stops propagation) reacts.
-    el.addEventListener('click', () => {
-      if (f.hidden) return;
-      if (state.currentFile !== f.id) {
-        state.currentFile = f.id;
-        renderFileList();
-        renderPages();
-      }
-    });
-    fileListEl.appendChild(el);
+  // Hidden PDFs are kept out of the main list entirely (not just dimmed) and
+  // reachable only through the disclosure below.
+  const visible = state.files.filter((f) => !f.hidden);
+  const hidden = state.files.filter((f) => f.hidden);
+  for (const f of visible) fileListEl.appendChild(buildFileEntry(f));
+  if (hidden.length) fileListEl.appendChild(buildHiddenSection(hidden));
+}
+
+function buildFileEntry(f) {
+  const nDet = f.pages.reduce((a, p) => a + p.dets.length, 0);
+  const el = document.createElement('div');
+  const override = f.intensity != null;
+  el.className = 'file-entry'
+    + (f.id === state.currentFile ? ' current' : '')
+    + (override ? ' net-override' : '')
+    + (f.hidden ? ' hidden-file' : '');
+  const meta = f.error
+    ? `<span class="err">error: ${escapeHtml(f.error)}</span>`
+    : `<span class="${nDet ? 'count' : 'zero'}">${nDet} coord${nDet === 1 ? '' : 's'}</span> · ${f.numPages} p.`;
+  el.innerHTML = `<div class="fname">${escapeHtml(f.name)}</div><div class="fmeta">${meta}</div>`;
+  // Controls row: the per-PDF detection-net override (visible files only, so a
+  // stubborn document can get a more aggressive net than the batch) plus a
+  // Hide/Show toggle to set the PDF aside or bring it back.
+  if (!f.error) {
+    const controls = document.createElement('div');
+    controls.className = 'file-controls';
+    if (!f.hidden) controls.appendChild(buildFileNetControl(f));
+    controls.appendChild(buildFileHideControl(f));
+    el.appendChild(controls);
   }
+  // A visible entry becomes the viewed PDF on click; a hidden entry (shown only
+  // in the expanded disclosure) is set aside, so only its Show button reacts.
+  el.addEventListener('click', () => {
+    if (f.hidden) return;
+    if (state.currentFile !== f.id) {
+      state.currentFile = f.id;
+      renderFileList();
+      renderPages();
+    }
+  });
+  return el;
+}
+
+// The collapsed disclosure that holds the set-aside PDFs. Its header shows the
+// count; expanding it lists the hidden PDFs (each with a Show button) so they
+// can be restored, then collapses away again.
+function buildHiddenSection(hiddenFiles) {
+  const wrap = document.createElement('div');
+  wrap.className = 'hidden-section';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'hidden-toggle';
+  toggle.setAttribute('aria-expanded', String(hiddenSectionOpen));
+  toggle.textContent =
+    `${hiddenSectionOpen ? '▾' : '▸'} ${hiddenFiles.length} hidden PDF${hiddenFiles.length === 1 ? '' : 's'}`;
+  toggle.title = 'PDFs you set aside — excluded from the table, exports and LLM runs. Expand to restore any of them.';
+  toggle.addEventListener('click', () => {
+    hiddenSectionOpen = !hiddenSectionOpen;
+    renderFileList();
+  });
+  wrap.appendChild(toggle);
+  if (hiddenSectionOpen) {
+    for (const f of hiddenFiles) wrap.appendChild(buildFileEntry(f));
+  }
+  return wrap;
 }
 
 // The Hide/Show toggle on each file entry. Hiding sets the PDF aside; showing
@@ -410,6 +445,8 @@ function toggleFileHidden(file) {
     if (active && active.src && active.src.fileId === file.id) state.activeRow = null;
     const anchor = state.rows.find((rr) => rr.id === state.anchor);
     if (anchor && anchor.src && anchor.src.fileId === file.id) state.anchor = null;
+    // Collapse the disclosure so the newly-hidden PDF drops out of sight.
+    hiddenSectionOpen = false;
   }
   renderAll();
   persistSoon();
