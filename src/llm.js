@@ -48,7 +48,7 @@ export const PROVIDERS = {
     kind: 'openai',
     url: 'https://api.deepseek.com/chat/completions',
     model: 'deepseek-v4-flash',
-    models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
+    models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
     keyHint: 'sk-…',
     keyUrl: 'https://platform.deepseek.com/api_keys',
     keyName: 'DeepSeek Platform',
@@ -67,8 +67,8 @@ export const PROVIDERS = {
     label: 'Kimi (Moonshot)',
     kind: 'openai',
     url: 'https://api.moonshot.cn/v1/chat/completions',
-    model: 'kimi-k2.6',
-    models: ['kimi-k2.6', 'kimi-k2.5', 'kimi-k2.7-code', 'moonshot-v1-128k', 'moonshot-v1-32k'],
+    model: 'kimi-k3',
+    models: ['kimi-k3', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2.7-code', 'moonshot-v1-128k', 'moonshot-v1-32k'],
     keyHint: 'sk-…',
     keyUrl: 'https://platform.moonshot.cn/console/api-keys',
     keyName: 'Moonshot Platform',
@@ -99,13 +99,33 @@ export const PROVIDERS = {
 // Request / response wire formats
 // ---------------------------------------------------------------------------
 
+// Sampling temperature the "advanced" toggle applies when the user turns it on.
+// Off by default the field is simply omitted, so requests are byte-for-byte what
+// they were before (the provider picks its own default). When enabled we send a
+// low value: verification is the always-on task and its instruction is "badge
+// every row", which a lot of models drift away from at higher temperatures
+// (rows come back with no badge). 0.2 pins that instruction-following down hard
+// while still leaving enough sampling latitude to pull genus/species out of the
+// surrounding prose and to decide a row needs an adjacent page.
+export const DEFAULT_TEMPERATURE = 0.2;
+export const MIN_TEMPERATURE = 0;
+// OpenAI-compatible providers accept up to 2; Anthropic caps at 1, but this
+// feature is opt-in and primarily aimed at the OpenAI-shaped providers, so we
+// allow the wider range and let the user stay within their provider's limit.
+export const MAX_TEMPERATURE = 2;
+
 /**
  * Ready-to-send HTTP request for one chat turn. `browser` adds the CORS opt-in
  * header Anthropic requires for direct browser calls (GitHub Pages build;
- * Electron proxies via main).
+ * Electron proxies via main). `temperature` is sent only when it is a finite
+ * number; leave it undefined to omit the field entirely (the default behaviour).
  */
-export function buildRequest({ kind, url, model, apiKey, system, user, maxTokens = 4096, browser = false }) {
+export function buildRequest({ kind, url, model, apiKey, system, user, maxTokens = 4096, temperature, browser = false }) {
   if (!url) throw new Error('No endpoint URL configured');
+  const withTemp = (body) => {
+    if (Number.isFinite(temperature)) body.temperature = temperature;
+    return body;
+  };
   if (kind === 'anthropic') {
     const headers = {
       'content-type': 'application/json',
@@ -117,12 +137,12 @@ export function buildRequest({ kind, url, model, apiKey, system, user, maxTokens
       url,
       method: 'POST',
       headers,
-      body: JSON.stringify({
+      body: JSON.stringify(withTemp({
         model,
         max_tokens: maxTokens,
         system,
         messages: [{ role: 'user', content: user }],
-      }),
+      })),
     };
   }
   const headers = { 'content-type': 'application/json' };
@@ -131,14 +151,14 @@ export function buildRequest({ kind, url, model, apiKey, system, user, maxTokens
     url,
     method: 'POST',
     headers,
-    body: JSON.stringify({
+    body: JSON.stringify(withTemp({
       model,
       max_tokens: maxTokens,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
-    }),
+    })),
   };
 }
 

@@ -2,7 +2,7 @@
   "name": "coordrippr",
   "productName": "CoordRippr",
   "//version": "Bumping by 0.1 goes to 0.x.0 (minor +1, patch reset to 0); bumping by 0.0.1 goes to 0.0.x (patch +1).",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Extract coordinate data from PDFs into clean CSV",
   "main": "main.js",
   "type": "module",

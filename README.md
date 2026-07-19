@@ -115,6 +115,15 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     the configured pool size is dispatched on a fixed interval regardless of
     whether the previous batch has completed. `0` (default) retains the
     steady-pool behaviour.
+  - **Advanced — model temperature**: off by default, in which case the field is
+    omitted from every request and the provider's own default temperature applies
+    (unchanged behaviour). Enabling it sends a sampling temperature (default
+    `0.2`, applied to both the primary and second model) — low enough that the
+    model follows the "verify and badge every row" instruction closely, so fewer
+    rows come back without a ✓ / ⚠ / ? badge, while still extracting genus/species
+    and requesting an adjacent page when a row needs one. OpenAI-compatible
+    providers accept up to `2`; Anthropic caps at `1` and some current models
+    reject the field outright.
   - Per-row verdict badge: ✓ confirmed, ⚠ mismatch (click to apply the suggested
     correction), ? not found. Rows the model skips are automatically re-sent
     until they come back badged.

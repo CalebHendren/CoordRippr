@@ -11,6 +11,7 @@ import {
   PROVIDERS, buildRequest, extractText, parseResultsJson, normalizeResult,
   buildPrompt, oneWord, chunkWork, chunkPerPage, runPool, runBatched,
   DEFAULT_CONCURRENCY, MAX_CONCURRENCY, DEFAULT_BATCH_DELAY, MAX_BATCH_DELAY_MS,
+  DEFAULT_TEMPERATURE, MIN_TEMPERATURE, MAX_TEMPERATURE,
 } from './llm.js';
 import { buildImagePdf } from './pdfout.js';
 import { RELEASES_API, RELEASES_PAGE, KOFI_URL, isNewer, isDue } from './updates.js';
@@ -1588,6 +1589,13 @@ function initLlmDialog() {
   $('#llm-concurrency').max = String(MAX_CONCURRENCY);
   $('#llm-delay').value = clampBatchDelay(prefs.batchDelay ?? DEFAULT_BATCH_DELAY);
   $('#llm-delay').max = String(MAX_BATCH_DELAY_MS);
+  // Advanced: model temperature (off by default — provider default is used).
+  if (prefs.tempOn != null) $('#llm-temp-on').checked = prefs.tempOn;
+  $('#llm-temp').value = clampTemperature(prefs.temperature ?? DEFAULT_TEMPERATURE);
+  $('#llm-temp').min = String(MIN_TEMPERATURE);
+  $('#llm-temp').max = String(MAX_TEMPERATURE);
+  syncTempState();
+  $('#llm-temp-on').addEventListener('change', syncTempState);
   if (prefs.notes != null) $('#llm-notes').checked = prefs.notes;
   if (prefs.notesSpec) $('#llm-notes-spec').value = prefs.notesSpec;
   // Retry model settings.
@@ -1723,6 +1731,20 @@ function clampBatchDelay(v) {
   return Math.min(n, MAX_BATCH_DELAY_MS);
 }
 
+// Coerce the temperature field into [MIN_TEMPERATURE, MAX_TEMPERATURE], falling
+// back to the default for blank/garbage input.
+function clampTemperature(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return DEFAULT_TEMPERATURE;
+  return Math.min(MAX_TEMPERATURE, Math.max(MIN_TEMPERATURE, n));
+}
+
+// The temperature value field is only editable when the "set temperature" box
+// is ticked; otherwise the provider's own default is used (unchanged behaviour).
+function syncTempState() {
+  $('#llm-temp').disabled = !$('#llm-temp-on').checked;
+}
+
 function collectLlmSettings() {
   const id = $('#llm-provider').value;
   const s = {
@@ -1743,6 +1765,11 @@ function collectLlmSettings() {
     perPage: $('#llm-perpage').checked,
     concurrency: clampConcurrency($('#llm-concurrency').value),
     batchDelay: clampBatchDelay($('#llm-delay').value),
+    // Advanced: when off, temperature stays undefined so the request is byte-for-
+    // byte what it was before (provider default). When on, a clamped value rides
+    // along to both the primary and second model.
+    tempOn: $('#llm-temp-on').checked,
+    temperature: clampTemperature($('#llm-temp').value),
     extra: $('#llm-extra').value,
     verify: $('#llm-verify').checked,
     genus: $('#llm-genus').checked,
@@ -1785,6 +1812,8 @@ function collectLlmSettings() {
   prefs.perPage = s.perPage;
   prefs.concurrency = s.concurrency;
   prefs.batchDelay = s.batchDelay;
+  prefs.tempOn = s.tempOn;
+  prefs.temperature = s.temperature;
   prefs.extra = s.extra;
   prefs.verify = s.verify;
   prefs.genus = s.genus;
@@ -2019,8 +2048,12 @@ $('#llm-run').addEventListener('click', async () => {
 
   // Request config for the primary model, and the second model (used by the
   // "retry unfinished rows" and/or "confirm deletions" features).
-  const primaryCfg = { kind: s.kind, url: s.url, model: s.model, key: s.key };
-  const secondCfg = s.useSecondModel ? { kind: s.retryKind, url: s.retryUrl, model: s.retryModel, key: s.retryKey } : null;
+  // When the advanced temperature toggle is off, `temp` is undefined and
+  // buildRequest omits the field entirely (unchanged behaviour). Both models
+  // share the one temperature setting.
+  const temp = s.tempOn ? s.temperature : undefined;
+  const primaryCfg = { kind: s.kind, url: s.url, model: s.model, key: s.key, temperature: temp };
+  const secondCfg = s.useSecondModel ? { kind: s.retryKind, url: s.retryUrl, model: s.retryModel, key: s.retryKey, temperature: temp } : null;
 
   // Dispatch a list of requests. With a batch delay set, fire fixed-size batches
   // on a wall-clock cadence (runBatched); otherwise keep a steady pool in flight
@@ -2064,7 +2097,7 @@ $('#llm-run').addEventListener('click', async () => {
   const postPrompt = async (system, user, label, cfg) => {
     const req = buildRequest({
       kind: cfg.kind, url: cfg.url, model: cfg.model, apiKey: cfg.key,
-      system, user, browser: IS_WEB,
+      system, user, temperature: cfg.temperature, browser: IS_WEB,
     });
     const res = await api.netFetch(req);
     if (res.error) throw new Error(res.error);
