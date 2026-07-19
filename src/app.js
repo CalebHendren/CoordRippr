@@ -68,6 +68,17 @@ const cellVal = (row, i) => (row.cells && row.cells[i]) || '';
 // one more strictly) without changing the net for the rest of the batch.
 const fileIntensity = (file) => (file && file.intensity != null ? file.intensity : state.intensity);
 
+// Hidden PDFs are ones the user set aside as "not needed": still loaded (so they
+// can be un-hidden) but excluded from the pages view, the CSV table, exports,
+// counts and LLM runs. Rows carry their source file id; manually-added rows
+// (src: null) are never hidden. `visibleRows()` is what every row-facing view
+// and operation works from, so hiding a PDF cleanly removes its rows everywhere.
+function visibleRows() {
+  const hidden = new Set(state.files.filter((f) => f.hidden).map((f) => f.id));
+  if (hidden.size === 0) return state.rows;
+  return state.rows.filter((r) => !(r.src && hidden.has(r.src.fileId)));
+}
+
 const $ = (sel) => document.querySelector(sel);
 const pagesEl = $('#pages');
 const fileListEl = $('#filelist');
@@ -88,9 +99,12 @@ function setStatus(msg, busy = false) {
 
 function refreshCounts() {
   const nFiles = state.files.length;
+  const nHidden = state.files.filter((f) => f.hidden).length;
   const nPages = state.files.reduce(
-    (a, f) => a + f.pages.filter((p) => p.dets.length).length, 0);
-  setStatus(`${nFiles} PDF${nFiles === 1 ? '' : 's'} · ${nPages} page${nPages === 1 ? '' : 's'} with coordinates · ${state.rows.length} row${state.rows.length === 1 ? '' : 's'}`);
+    (a, f) => a + (f.hidden ? 0 : f.pages.filter((p) => p.dets.length).length), 0);
+  const nRows = visibleRows().length;
+  const hiddenNote = nHidden ? ` (${nHidden} hidden)` : '';
+  setStatus(`${nFiles} PDF${nFiles === 1 ? '' : 's'}${hiddenNote} · ${nPages} page${nPages === 1 ? '' : 's'} with coordinates · ${nRows} row${nRows === 1 ? '' : 's'}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +121,7 @@ async function loadFiles(specs) {
       id: uid('f'), name: spec.name, path: spec.path || null,
       doc: null, error: null, numPages: 0, pages: [],
       intensity: null, // per-PDF net override; null = follow the global net
+      hidden: false, // user can set a PDF aside as "not needed"
     };
     state.files.push(file);
     try {
@@ -325,15 +340,29 @@ function renderFileList() {
     const nDet = f.pages.reduce((a, p) => a + p.dets.length, 0);
     const el = document.createElement('div');
     const override = f.intensity != null;
-    el.className = 'file-entry' + (f.id === state.currentFile ? ' current' : '') + (override ? ' net-override' : '');
+    el.className = 'file-entry'
+      + (f.id === state.currentFile ? ' current' : '')
+      + (override ? ' net-override' : '')
+      + (f.hidden ? ' hidden-file' : '');
     const meta = f.error
       ? `<span class="err">error: ${escapeHtml(f.error)}</span>`
-      : `<span class="${nDet ? 'count' : 'zero'}">${nDet} coord${nDet === 1 ? '' : 's'}</span> · ${f.numPages} p.`;
+      : `<span class="${nDet ? 'count' : 'zero'}">${nDet} coord${nDet === 1 ? '' : 's'}</span> · ${f.numPages} p.`
+        + (f.hidden ? ' · <span class="hidden-tag">hidden</span>' : '');
     el.innerHTML = `<div class="fname">${escapeHtml(f.name)}</div><div class="fmeta">${meta}</div>`;
-    // Per-PDF detection-net override, so a stubborn document can get a more
-    // aggressive net than the rest of the batch.
-    if (!f.error) el.appendChild(buildFileNetControl(f));
+    // Controls row: the per-PDF detection-net override (visible files only, so a
+    // stubborn document can get a more aggressive net than the batch) plus a
+    // Hide/Show toggle to set the PDF aside or bring it back.
+    if (!f.error) {
+      const controls = document.createElement('div');
+      controls.className = 'file-controls';
+      if (!f.hidden) controls.appendChild(buildFileNetControl(f));
+      controls.appendChild(buildFileHideControl(f));
+      el.appendChild(controls);
+    }
+    // A visible entry becomes the viewed PDF on click; a hidden entry is set
+    // aside, so only its Show button (which stops propagation) reacts.
     el.addEventListener('click', () => {
+      if (f.hidden) return;
       if (state.currentFile !== f.id) {
         state.currentFile = f.id;
         renderFileList();
@@ -342,6 +371,51 @@ function renderFileList() {
     });
     fileListEl.appendChild(el);
   }
+}
+
+// The Hide/Show toggle on each file entry. Hiding sets the PDF aside; showing
+// brings it back. Clicks stop propagating so the entry's switch-file handler
+// (and, for visible files, the net picker beside it) is not triggered.
+function buildFileHideControl(file) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'file-hide';
+  btn.textContent = file.hidden ? 'Show' : 'Hide';
+  btn.title = file.hidden
+    ? 'This PDF is set aside — its rows are excluded from the table, exports and LLM runs. Click to bring it back.'
+    : 'Set this PDF aside as not needed: hide it from the viewer and exclude its rows from the table, exports and LLM runs. You can show it again any time.';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFileHidden(file);
+  });
+  return btn;
+}
+
+// Flip a PDF between hidden ("set aside") and visible. Hiding also drops it as
+// the viewed PDF and clears any selection/active row that pointed into it, so
+// nothing dangles at a now-hidden row.
+function toggleFileHidden(file) {
+  if (state.busy) { setStatus('Busy — try again when scanning finishes.'); return; }
+  file.hidden = !file.hidden;
+  if (file.hidden) {
+    if (state.currentFile === file.id) {
+      const next = state.files.find((f) => !f.hidden && !f.error);
+      state.currentFile = next ? next.id : null;
+    }
+    for (const id of [...state.selected]) {
+      const r = state.rows.find((rr) => rr.id === id);
+      if (r && r.src && r.src.fileId === file.id) state.selected.delete(id);
+    }
+    const active = state.rows.find((rr) => rr.id === state.activeRow);
+    if (active && active.src && active.src.fileId === file.id) state.activeRow = null;
+    const anchor = state.rows.find((rr) => rr.id === state.anchor);
+    if (anchor && anchor.src && anchor.src.fileId === file.id) state.anchor = null;
+  }
+  renderAll();
+  persistSoon();
+  setStatus(file.hidden
+    ? `Hid ${file.name} — its rows are excluded from the CSV. Click Show to bring it back.`
+    : `Restored ${file.name}.`);
 }
 
 // The per-PDF net picker shown on each file entry. "Auto" follows the global
@@ -403,7 +477,7 @@ function renderPages() {
   pagesEl.innerHTML = '';
   const file = state.files.find((f) => f.id === state.currentFile);
   const empty = $('#pdf-empty');
-  if (!file || file.error) {
+  if (!file || file.error || file.hidden) {
     empty.style.display = '';
     return;
   }
@@ -614,13 +688,14 @@ function renderTable() {
     (state.notesOn ? `<th class="notescol" title="LLM-filled Notes column (exported)">Notes</th>` : '');
   theadEl.appendChild(hr);
 
-  // Body
+  // Body — only rows whose source PDF is visible (hidden PDFs are set aside).
   tbodyEl.innerHTML = '';
-  for (const row of state.rows) {
-    tbodyEl.appendChild(buildRowEl(row, cols));
-  }
-  $('#csv-empty').style.display = state.rows.length ? 'none' : '';
-  const flagged = state.rows.filter((r) => r.llm && r.llm.del).length;
+  const rows = visibleRows();
+  rows.forEach((row, i) => {
+    tbodyEl.appendChild(buildRowEl(row, cols, i));
+  });
+  $('#csv-empty').style.display = rows.length ? 'none' : '';
+  const flagged = rows.filter((r) => r.llm && r.llm.del).length;
   const delFlaggedBtn = $('#btn-del-flagged');
   delFlaggedBtn.classList.toggle('hidden', flagged === 0);
   delFlaggedBtn.textContent = `🗑 Delete Flagged (${flagged})`;
@@ -629,11 +704,10 @@ function renderTable() {
   positionFillHandle();
 }
 
-function buildRowEl(row, cols) {
+function buildRowEl(row, cols, idx) {
   const tr = document.createElement('tr');
   tr.dataset.row = row.id;
 
-  const idx = state.rows.indexOf(row);
   const tdNum = document.createElement('td');
   tdNum.className = 'rownum';
   tdNum.textContent = idx + 1;
@@ -823,7 +897,7 @@ tbodyEl.addEventListener('click', (e) => {
   const rowId = tr.dataset.row;
 
   if (e.target.classList.contains('rownum')) {
-    const ids = state.rows.map((r) => r.id);
+    const ids = visibleRows().map((r) => r.id);
     if (e.shiftKey && state.anchor) {
       const a = ids.indexOf(state.anchor);
       const b = ids.indexOf(rowId);
@@ -917,7 +991,8 @@ tbodyEl.addEventListener('focusin', (e) => {
 function fillRangeRows() {
   const a = Math.min(filling.srcIndex, filling.targetIndex);
   const b = Math.max(filling.srcIndex, filling.targetIndex);
-  return state.rows.slice(a, b + 1);
+  // Indices are positions within the visible (rendered) rows.
+  return visibleRows().slice(a, b + 1);
 }
 
 function paintFillPreview() {
@@ -935,12 +1010,12 @@ function updateFillTarget(x, y) {
   const el = document.elementFromPoint(x, y);
   const tr = el && el.closest && el.closest('#csv-table tbody tr');
   if (tr && tr.dataset.row) {
-    const idx = state.rows.findIndex((r) => r.id === tr.dataset.row);
+    const idx = visibleRows().findIndex((r) => r.id === tr.dataset.row);
     if (idx >= 0) filling.targetIndex = idx;
   } else {
     const rows = [...tbodyEl.querySelectorAll('tr')];
     if (rows.length) {
-      if (y >= rows[rows.length - 1].getBoundingClientRect().bottom) filling.targetIndex = state.rows.length - 1;
+      if (y >= rows[rows.length - 1].getBoundingClientRect().bottom) filling.targetIndex = rows.length - 1;
       else if (y <= rows[0].getBoundingClientRect().top) filling.targetIndex = 0;
     }
   }
@@ -985,7 +1060,7 @@ function onFillUp() {
   if (!f) return;
   const a = Math.min(f.srcIndex, f.targetIndex);
   const b = Math.max(f.srcIndex, f.targetIndex);
-  const rows = state.rows.slice(a, b + 1);
+  const rows = visibleRows().slice(a, b + 1);
   if (rows.length <= 1) return; // no drag — nothing to fill
   const ids = new Set(rows.map((r) => r.id));
   fillColumn(ids, f.col, f.value);
@@ -998,7 +1073,7 @@ fillHandle.addEventListener('mousedown', (e) => {
   e.preventDefault(); // keep focus (and the handle) on the source cell
   const srcTr = tbodyEl.querySelector(`tr[data-row="${fillAnchor.rowId}"]`);
   const srcInput = inputInRow(srcTr, fillAnchor.col);
-  const srcIndex = state.rows.findIndex((r) => r.id === fillAnchor.rowId);
+  const srcIndex = visibleRows().findIndex((r) => r.id === fillAnchor.rowId);
   if (!srcInput || srcIndex < 0) return;
   filling = {
     col: fillAnchor.col, srcIndex, targetIndex: srcIndex,
@@ -1223,7 +1298,7 @@ $('#btn-del-rows').addEventListener('click', () => {
 });
 
 $('#btn-del-flagged').addEventListener('click', () => {
-  const flagged = state.rows.filter((r) => r.llm && r.llm.del);
+  const flagged = visibleRows().filter((r) => r.llm && r.llm.del);
   if (flagged.length === 0) return;
   const ok = confirm(
     `Delete the ${flagged.length} row${flagged.length === 1 ? '' : 's'} the LLM flagged as false positives?\n\n` +
@@ -1251,8 +1326,9 @@ function dedupOpts() {
 
 // Refresh the "N of M would be removed" preview and enable/disable the button.
 function syncDedupPreview() {
-  const n = findDuplicateRowIds(state.rows, dedupOpts()).length;
-  const total = state.rows.length;
+  const rows = visibleRows();
+  const n = findDuplicateRowIds(rows, dedupOpts()).length;
+  const total = rows.length;
   $('#dedup-status').textContent = n === 0
     ? `No duplicate coordinates found among the ${total} row${total === 1 ? '' : 's'}.`
     : `${n} duplicate row${n === 1 ? '' : 's'} will be removed (of ${total}).`;
@@ -1260,7 +1336,7 @@ function syncDedupPreview() {
 }
 
 $('#btn-dedup').addEventListener('click', () => {
-  if (state.rows.length === 0) { setStatus('Nothing to de-duplicate yet.'); return; }
+  if (visibleRows().length === 0) { setStatus('Nothing to de-duplicate yet.'); return; }
   // The label references the current column-1/2 header names.
   const c1 = (state.cols[0] || 'Column 1').trim() || 'Column 1';
   const c2 = (state.cols[1] || 'Column 2').trim() || 'Column 2';
@@ -1274,7 +1350,7 @@ for (const id of ['dedup-samecols', 'dedup-samepdf']) {
 }
 
 $('#dedup-run').addEventListener('click', () => {
-  const ids = findDuplicateRowIds(state.rows, dedupOpts());
+  const ids = findDuplicateRowIds(visibleRows(), dedupOpts());
   if (ids.length === 0) { syncDedupPreview(); return; }
   removeRows(new Set(ids));
   state.anchor = null;
@@ -1306,7 +1382,8 @@ $('#btn-fill-range').addEventListener('click', () => {
   const to = parseInt($('#fill-to').value, 10);
   if (!from || !to) { setStatus('Enter a row range first (e.g. rows 2 – 23).'); return; }
   const [a, b] = [Math.min(from, to), Math.max(from, to)];
-  const ids = new Set(state.rows.slice(a - 1, b).map((r) => r.id));
+  // Row numbers shown in the table are positions within the visible rows.
+  const ids = new Set(visibleRows().slice(a - 1, b).map((r) => r.id));
   applyFill(ids, $('#fill-col').value, $('#fill-value').value);
 });
 
@@ -1329,7 +1406,7 @@ function buildCsv() {
   const header = [...state.cols, ...cols.map((c) => c.label)];
   if (state.notesOn) header.push('Notes');
   const lines = [header.map(csvEscape).join(',')];
-  for (const row of state.rows) {
+  for (const row of visibleRows()) {
     const cells = [
       ...state.cols.map((_, i) => cellVal(row, i)),
       ...cols.map((c) => cellText(row, c)),
@@ -1341,7 +1418,10 @@ function buildCsv() {
 }
 
 $('#btn-export').addEventListener('click', async () => {
-  if (state.rows.length === 0) { setStatus('Nothing to export yet.'); return; }
+  if (visibleRows().length === 0) {
+    setStatus(state.rows.length ? 'Nothing to export — every row is in a hidden PDF.' : 'Nothing to export yet.');
+    return;
+  }
   const saved = await api.saveCsv({
     defaultName: 'coordinates.csv',
     content: buildCsv(),
@@ -1672,7 +1752,8 @@ function renderLlmFileList() {
     prev.set(cb.dataset.file, cb.checked);
   }
   box.innerHTML = '';
-  const files = state.files.filter((f) => !f.error);
+  // Hidden PDFs are set aside, so they are not offered to the LLM.
+  const files = state.files.filter((f) => !f.error && !f.hidden);
   if (files.length === 0) {
     box.innerHTML = '<span class="muted">No PDFs loaded.</span>';
     return;
@@ -1838,14 +1919,18 @@ function collectLlmSettings() {
 function buildLlmWork({ scope, files, unsentOnly }) {
   const work = [];
   let skippedSent = 0;
+  // Row numbers reported back to the user (e.g. the deletion summary) should
+  // match the table, which numbers the visible rows.
+  const rowNum = new Map();
+  visibleRows().forEach((r, i) => rowNum.set(r.id, i + 1));
   for (const file of state.files) {
-    if (file.error || !files.has(file.id)) continue;
+    if (file.error || file.hidden || !files.has(file.id)) continue;
     const rows = [];
-    state.rows.forEach((r, i) => {
+    state.rows.forEach((r) => {
       if (r.src && r.src.fileId === file.id) {
         if (unsentOnly && r.llmSent) { skippedSent++; return; }
         rows.push({
-          id: r.id, num: i + 1, cells: [...(r.cells || [])],
+          id: r.id, num: rowNum.get(r.id) ?? 0, cells: [...(r.cells || [])],
           lat: r.lat != null ? Number(r.lat.toFixed(6)) : null,
           lon: r.lon != null ? Number(r.lon.toFixed(6)) : null,
           file: file.name, page: r.src.pageNum,

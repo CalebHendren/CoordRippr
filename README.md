@@ -55,6 +55,12 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     a more aggressive (or stricter) net than the rest of the batch — useful for
     one messy document among clean ones. The override re-scans only that PDF (in
     place, edits preserved) and is saved with the session.
+  - **Hide PDFs** — each PDF in the file list has a *Hide* button to set aside a
+    document you decide isn't needed. A hidden PDF stays loaded but is excluded
+    from the page view, the CSV table, exports and LLM runs, and its dimmed entry
+    shows a *Show* button to bring it back at any time — nothing is deleted.
+    Hidden state is saved with the session. (To remove a PDF's data permanently,
+    delete its rows instead.)
 - **Page view** — Shows only pages with detections by default (*Show all pages*
   to view the rest). Matches are highlighted; hovering a highlight shows the raw
   matched text; the *Highlights* toggle hides the boxes. Clicking a CSV row

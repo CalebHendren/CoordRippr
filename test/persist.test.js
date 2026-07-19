@@ -76,6 +76,7 @@ test('pack → unpack round trip preserves the session', () => {
   assert.equal(restored.files.length, 1);
   assert.equal(restored.files[0].doc, null); // reattached later by the app
   assert.equal(restored.files[0].intensity, 5); // per-PDF net override survives
+  assert.equal(restored.files[0].hidden, false); // not set aside in the sample
   assert.equal(restored.files[0].pages[1].proxy, null);
   assert.deepEqual(restored.files[0].pages[1].dets, ['d1']);
 
@@ -101,6 +102,14 @@ test('a file without an intensity override unpacks to null (follows the global n
     files: [{ id: 'f1', name: 'a.pdf', numPages: 1, pages: [{ num: 1, w: 1, h: 1, dets: [] }] }],
   });
   assert.equal(restored.files[0].intensity, null);
+  assert.equal(restored.files[0].hidden, false); // absent hidden flag defaults to visible
+});
+
+test('a hidden PDF survives the pack → unpack round trip', () => {
+  const state = sampleState();
+  state.files[0].hidden = true;
+  const restored = unpackState(JSON.parse(JSON.stringify(packState(state, 1))));
+  assert.equal(restored.files[0].hidden, true);
 });
 
 test('unpackState rejects garbage and fills defaults', () => {

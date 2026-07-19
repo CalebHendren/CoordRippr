@@ -161,6 +161,19 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
 }
 .file-entry.net-override .file-net-label,
 .file-entry.net-override .file-net-sel { color: var(--accent); border-color: var(--accent-dim); }
+.file-controls { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.file-controls .file-net { flex: 1; min-width: 0; margin-top: 0; }
+.file-hide {
+  flex: none; font-size: 11px; padding: 1px 7px; cursor: pointer;
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.file-hide:hover { color: var(--text); border-color: var(--accent-dim); }
+/* A set-aside PDF: dimmed, struck through, and not clickable to view. */
+.file-entry.hidden-file { opacity: 0.55; cursor: default; }
+.file-entry.hidden-file:hover { opacity: 0.85; background: transparent; }
+.file-entry.hidden-file .fname { text-decoration: line-through; }
+.file-entry.hidden-file .hidden-tag { font-style: italic; color: var(--muted); }
 
 #pages-scroll { flex: 1; overflow: auto; background: #0b0e14; position: relative; }
 #pages { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 18px; }
