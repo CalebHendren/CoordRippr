@@ -1,8 +1,10 @@
 // CoordRippr coordinate parsing / cleaning / formatting. Pure module (no DOM,
 // no Electron); used by the renderer and node --test. A wide regex finds
 // candidate tokens, parseToken() interprets them, pairTokens() assembles
-// lat/lon pairs. False positives are tolerated (user deletes rows); bare
-// numbers survive only when they pair into a plausible lat/lon couple.
+// lat/lon pairs. How much is tolerated is the caller's choice: the detection
+// net runs 1 (strictest, the default) to 12 (everything). At the wide end false
+// positives are expected and the user deletes rows; bare numbers survive only
+// when they pair into a plausible lat/lon couple.
 
 // ---------------------------------------------------------------------------
 // Character classes. PDFs are sloppy: any of these can stand in for °, ' , ".
@@ -10,6 +12,11 @@
 
 // ° º ˚ ◦ ᵒ ⁰ ∘ (letter o/O handled separately: only valid touching the digits)
 const DEG_MARKS = '°º˚◦ᵒ⁰∘';
+// Some journals spell the degree out: "10Deg 32'S 62Deg 48'W". Like the letter
+// o, this only counts when it touches the digits (checked in parseToken) — with
+// a space in front it is ordinary prose: "rotated 25-30 degrees", "0.1 degree
+// spatial resolution". Guarded so it can't swallow a longer word ("Degeneria").
+const DEG_WORD = '[Dd]eg(?![A-Za-z])';
 // ' ′ ’ ‘ ` ´ ʹ ʼ ˊ ᾿ ‛
 const MIN_MARKS = "'′’‘`´ʹʼˊ᾿‛";
 // " ″ ” “ ʺ 〃 ‶
@@ -18,7 +25,7 @@ const SEC_MARKS = '"″”“ʺ〃‶';
 // hyphen would silently become a huge character range)
 const MINUS = '−–—‐‑‒-';
 
-const D = `[${DEG_MARKS}]|[oO](?=[\\s ]{0,2}[\\d${MIN_MARKS}NSEWnsew])`;
+const D = `[${DEG_MARKS}]|${DEG_WORD}|[oO](?=[\\s ]{0,2}[\\d${MIN_MARKS}NSEWnsew])`;
 const M = `[${MIN_MARKS}]`;
 const S = `[${SEC_MARKS}]|[${MIN_MARKS}]{2}`;
 // Horizontal whitespace only (space, tab, NBSP, thin spaces …) — NOT a newline.
@@ -37,11 +44,16 @@ const NUM = `\\d{1,3}(?:[.,]\\d+)?`;
 const HEMI_WORD =
   '[Nn]orth|[Ss]outh|[Ee]ast|[Ww]est|[Oo]este|[Oo]uest|[Ll]at(?:itude)?|[Ll]on(?:g(?:itude)?)?';
 
+// A hemisphere letter or word only counts at the start of a word: without this
+// guard the tail of an ordinary word becomes a hemisphere — "at least 14" reads
+// as "east 14" (the single most common false positive), "…ANDES 40" as "S 40".
+const WB = '(?<![A-Za-z])';
+
 // One candidate coordinate token. Everything after the leading number is
 // optional so the net stays wide; parseToken() applies the judgement.
 const TOKEN_SRC =
-  `(?:(?<wordpre>${HEMI_WORD})[.:]?${SP})?` +
-  `(?:(?<hemipre>[NSEWO])[.]?${SP})?` +
+  `(?:${WB}(?<wordpre>${HEMI_WORD})[.:]?${SP})?` +
+  `(?:${WB}(?<hemipre>[NSEWO])[.]?${SP})?` +
   `(?<sign>[+${MINUS}])?${SP}` +
   `(?<![\\d.,])(?<deg>${NUM})(?![\\d])${SP}` +
   `(?<degmark>${D})?${SP}` +
@@ -49,7 +61,15 @@ const TOKEN_SRC =
   `(?:(?<secmark1>${S})|(?<minmark>${M}))?${SP}` +
   `(?:(?<![\\d.,])(?<sec>\\d{1,2}(?:[.,]\\d+)?)(?![\\d])${SP}(?<secmark2>${S})?)?` +
   `)?` +
-  `(?:${SP}(?:(?<hemipost>[NSEWOnsew])(?![A-Za-z0-9])|(?<hemiword>${HEMI_WORD})(?![A-Za-z])))?`;
+  // A tick sitting where the minutes would be, with no minutes behind it: the
+  // degrees were dropped by the typesetter ("100 ft., 17' N 104°46' W"), or the
+  // seconds carry a stray closing tick ("88°59'11'W"). Without this the minute
+  // group's leading (?<![\d.,]) can never fire — it is preceded by the degrees.
+  // Minute marks only: a seconds mark here ("46''S") is nearly always the tail
+  // of a coordinate whose degrees and minutes failed to parse, and letting it
+  // stand alone lets it steal the pairing from a real neighbour.
+  `(?<degtick>${M})?` +
+  `(?:${SP}(?:(?<hemipost>[NSEWOnsew])(?![A-Za-z0-9])|${WB}(?<hemiword>${HEMI_WORD})(?![A-Za-z])))?`;
 
 const TOKEN_REGEX = () => new RegExp(TOKEN_SRC, 'dg');
 
@@ -60,43 +80,59 @@ const HEMI_MAP = {
 };
 
 // ---------------------------------------------------------------------------
-// Intensity: detection-net width (1 = strictest … 7 = everything; 5 = default).
-// The four strictest steps (1–4) give fine control over false positives; the
-// pairing requirement loosens one notch at a time from "both halves strong".
+// Intensity: detection-net width (1 = strictest … 12 = everything; 1 = default).
+// Two knobs move as the level rises: how strong the two halves of a pair must
+// be, and how much text may sit between them. The old 7-step scale is a subset
+// of this one — every one of its levels kept its exact rule set, and the six
+// new steps only widen the gap budget, which is where users need fine control.
+// MAX_INTENSITY-aware code: src/persist.js migrates old snapshots (LEGACY_MAP).
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_INTENSITY = 5;
+export const MAX_INTENSITY = 12;
+
+// Strictest. It has the best precision on real journal text, so it is where new
+// projects start; widen the net per-PDF or globally when a document needs it.
+export const DEFAULT_INTENSITY = 1;
+
+// Old 7-step level -> its equivalent on this scale. Used by persist.js to bring
+// pre-0.6 snapshots (and their per-PDF overrides) across unchanged.
+export const LEGACY_INTENSITY_MAP = { 1: 1, 2: 2, 3: 3, 4: 5, 5: 7, 6: 9, 7: 11 };
 
 export const INTENSITY_LABELS = {
   1: 'Strictest — both halves strong (°, hemisphere, …); nothing kept alone',
   2: 'Strict — both halves strong, but a lone strong coordinate is kept',
   3: 'Firm — a strong half pairs only with another solid (≥ medium) half',
-  4: 'Careful — a strong half may pair with a weaker partner',
-  5: 'Balanced — the classic CoordRippr net (default)',
-  6: 'Wide — single-decimal numbers can pair, bigger gaps allowed',
-  7: 'Everything — even bare integer pairs; expect false positives',
+  4: 'Firm (wider gap) — as Firm, with more text allowed between the halves',
+  5: 'Careful — a strong half may pair with a weaker partner',
+  6: 'Careful (wider gap) — as Careful, with more text allowed between the halves',
+  7: 'Balanced — the classic CoordRippr net',
+  8: 'Balanced (wider gap) — as Balanced, with more text allowed between the halves',
+  9: 'Wide — single-decimal numbers can pair, bigger gaps allowed',
+  10: 'Wide (keeps lone medium) — as Wide, and a lone medium coordinate survives',
+  11: 'Everything — even bare integer pairs; expect false positives',
+  12: 'Everything (max gap) — as Everything, with the halves allowed far apart',
 };
 
 function intensityRules(level) {
-  const l = Math.min(7, Math.max(1, Math.round(Number(level) || DEFAULT_INTENSITY)));
+  const l = Math.min(MAX_INTENSITY, Math.max(1, Math.round(Number(level) || DEFAULT_INTENSITY)));
   return {
     level: l,
     // decimal digits needed for a bare number to count as a weak candidate
-    weakDecimals: l >= 6 ? 1 : 2,
+    weakDecimals: l >= 9 ? 1 : 2,
     // integers with no coordinate evidence at all become 'bare' candidates
-    allowBare: l >= 7,
+    allowBare: l >= 11,
     // max chars between the two halves of a pair (index by level; [0] unused)
-    maxGap: [0, 22, 26, 30, 36, 44, 64, 84][l],
+    maxGap: [0, 22, 26, 30, 33, 36, 40, 44, 54, 64, 74, 84, 110][l],
     // how strong the two halves must be to pair, strict → loose:
     //  both-strong → strong+medium → one-strong → default (medium/weak-pair) → any
     pairNeeds:
       l <= 2 ? 'both-strong'
-        : l === 3 ? 'strong+medium'
-          : l === 4 ? 'one-strong'
-            : l <= 6 ? 'default'
+        : l <= 4 ? 'strong+medium'
+          : l <= 6 ? 'one-strong'
+            : l <= 10 ? 'default'
               : 'any',
     // whether an unpaired token survives on its own
-    keepLone: l === 1 ? 'none' : l >= 7 ? 'strong+medium' : 'strong',
+    keepLone: l === 1 ? 'none' : l >= 10 ? 'strong+medium' : 'strong',
   };
 }
 
@@ -125,10 +161,11 @@ function parseToken(m, text, rules) {
   let sec = num(g.sec);
   if (deg == null || Number.isNaN(deg)) return null;
 
-  // Letter 'o' as a degree mark is only credible when it touches the digits:
-  // "12o30'" yes — "12 o'clock" no.
+  // A spelled-out degree mark — the letter 'o' or the word "Deg" — is only
+  // credible when it touches the digits: "12o30'" and "10Deg 32'S" yes,
+  // "12 o'clock" and "rotated 30 degrees" no. Symbols need no such proof.
   let hasDegMark = !!g.degmark;
-  if (hasDegMark && /^[oO]$/.test(g.degmark)) {
+  if (hasDegMark && /^(?:[oO]|[Dd]eg)$/.test(g.degmark)) {
     const degEnd = m.indices.groups.deg[1];
     const markStart = m.indices.groups.degmark[0];
     if (markStart !== degEnd) hasDegMark = false;
@@ -136,9 +173,17 @@ function parseToken(m, text, rules) {
 
   const hasMinMark = !!g.minmark;
   const hasSecMark = !!(g.secmark1 || g.secmark2);
+  // A tick where the minutes would be, with no minutes behind it — see the
+  // `degtick` note on TOKEN_SRC. Counts as one point of coordinate evidence.
+  const hasDegTick = !!g.degtick;
   let hemi = null;
   let hemiFromLoneO = false; // the West came from a bare letter "O" (Oeste/Ouest)
-  for (const h of [g.hemipre, g.hemipost, g.hemiword, g.wordpre]) {
+  // Trailing hemispheres are checked FIRST: a letter after the number belongs to
+  // that number, while a leading one is often the orphan of a coordinate the
+  // parser could not read ("17' N 104°46' W" — the N is the latitude's, but the
+  // only token here is 104°46'W, and reading its hemisphere as N made it a
+  // 104° latitude, out of range, so the good longitude was discarded too).
+  for (const h of [g.hemipost, g.hemiword, g.hemipre, g.wordpre]) {
     if (h) {
       const mapped = HEMI_MAP[h.toLowerCase()];
       if (mapped) { hemi = mapped; hemiFromLoneO = /^[oO]$/.test(h); break; }
@@ -148,7 +193,7 @@ function parseToken(m, text, rules) {
   // minutes, or a decimal fraction. Otherwise stray text like "5 O." or a lone
   // capital O would masquerade as a longitude. Spelled-out "Oeste"/"Ouest" is
   // unambiguous and always kept.
-  if (hemiFromLoneO && !g.degmark && min == null && !/[.,]/.test(g.deg)) { hemi = null; }
+  if (hemiFromLoneO && !g.degmark && !g.degtick && min == null && !/[.,]/.test(g.deg)) { hemi = null; }
   // "lat"/"long" words pin the axis without giving a sign.
   let axisWord = null;
   for (const w0 of [g.hemiword, g.wordpre]) {
@@ -173,7 +218,7 @@ function parseToken(m, text, rules) {
     (hasDegMark ? 2 : 0) +
     (hemi ? 2 : 0) +
     (axisWord ? 1 : 0) +
-    (hasMinMark || hasSecMark ? 1 : 0) +
+    (hasMinMark || hasSecMark || hasDegTick ? 1 : 0) +
     (min != null && sec != null ? 1 : 0);
 
   let dd = Math.abs(deg) + (min || 0) / 60 + (sec || 0) / 3600;
@@ -202,7 +247,7 @@ function parseToken(m, text, rules) {
     start, end, raw: raw.trim(),
     deg: Math.abs(deg), min, sec, hemi, negative: dd < 0,
     dd, axis, isDMS, strength,
-    hasDegMark, hasMinMark, hasSecMark,
+    hasDegMark, hasMinMark, hasSecMark, hasDegTick,
   };
 }
 

@@ -10,15 +10,17 @@
 
 // Each provider ships a curated list of current model IDs for the dropdown.
 // `model` is the default (one of `models`); "Custom…" lets users type any ID.
-// Models verified current July 2026 — refresh when providers rotate line-ups.
+// Line-ups rotate constantly and a stale ID announces itself as a 404 — when a
+// provider ships something new, add it here; "Custom…" covers the gap in the
+// meantime. Last refreshed July 2026.
 // `keyUrl`/`keyName` point at the provider's API-key page (linked in the UI).
 export const PROVIDERS = {
   anthropic: {
     label: 'Anthropic (Claude)',
     kind: 'anthropic',
     url: 'https://api.anthropic.com/v1/messages',
-    model: 'claude-opus-4-8',
-    models: ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-fable-5'],
+    model: 'claude-sonnet-5',
+    models: ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5', 'claude-fable-5'],
     keyHint: 'sk-ant-…',
     keyUrl: 'https://console.anthropic.com/settings/keys',
     keyName: 'Anthropic Console',
@@ -28,7 +30,7 @@ export const PROVIDERS = {
     kind: 'openai',
     url: 'https://api.openai.com/v1/chat/completions',
     model: 'gpt-5.1',
-    models: ['gpt-5.1', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1'],
+    models: ['gpt-5.1', 'gpt-5.1-mini', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1'],
     keyHint: 'sk-…',
     keyUrl: 'https://platform.openai.com/api-keys',
     keyName: 'OpenAI Platform',
@@ -37,8 +39,8 @@ export const PROVIDERS = {
     label: 'Google (Gemini)',
     kind: 'openai',
     url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-    model: 'gemini-2.5-flash',
-    models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.5-flash', 'gemini-flash-latest'],
+    model: 'gemini-3-pro',
+    models: ['gemini-3-pro', 'gemini-3-flash', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-flash-latest'],
     keyHint: 'AIza…',
     keyUrl: 'https://aistudio.google.com/app/apikey',
     keyName: 'Google AI Studio',
@@ -48,7 +50,7 @@ export const PROVIDERS = {
     kind: 'openai',
     url: 'https://api.deepseek.com/chat/completions',
     model: 'deepseek-v4-flash',
-    models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+    models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner'],
     keyHint: 'sk-…',
     keyUrl: 'https://platform.deepseek.com/api_keys',
     keyName: 'DeepSeek Platform',
@@ -57,8 +59,8 @@ export const PROVIDERS = {
     label: 'Qwen (Alibaba DashScope)',
     kind: 'openai',
     url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
-    model: 'qwen-plus',
-    models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen3-max'],
+    model: 'qwen3-max',
+    models: ['qwen3-max', 'qwen-max', 'qwen-plus', 'qwen-flash', 'qwen-turbo'],
     keyHint: 'sk-…',
     keyUrl: 'https://dashscope.console.aliyun.com/apiKey',
     keyName: 'Alibaba Cloud DashScope',
@@ -68,7 +70,7 @@ export const PROVIDERS = {
     kind: 'openai',
     url: 'https://api.moonshot.cn/v1/chat/completions',
     model: 'kimi-k3',
-    models: ['kimi-k3', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2.7-code', 'moonshot-v1-128k', 'moonshot-v1-32k'],
+    models: ['kimi-k3', 'kimi-k3-turbo', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2.7-code'],
     keyHint: 'sk-…',
     keyUrl: 'https://platform.moonshot.cn/console/api-keys',
     keyName: 'Moonshot Platform',
@@ -77,8 +79,8 @@ export const PROVIDERS = {
     label: 'GLM (Zhipu / BigModel)',
     kind: 'openai',
     url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
-    model: 'glm-4.6',
-    models: ['glm-4.6', 'glm-4.7', 'glm-4.5', 'glm-4.5-air', 'glm-4-flash'],
+    model: 'glm-4.7',
+    models: ['glm-4.7', 'glm-4.6', 'glm-4.5-air', 'glm-4-flash'],
     keyHint: '…',
     keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
     keyName: 'Zhipu BigModel',
@@ -394,6 +396,108 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, spe
     lines.push(p.text);
   }
   return { system, user: lines.join('\n') };
+}
+
+// ---------------------------------------------------------------------------
+// PDF renaming: ask the model what a document should be called
+// ---------------------------------------------------------------------------
+
+// What the name should be based on, when the user does not say otherwise. These
+// are taxonomy papers; the genus is the thing you actually want in the filename.
+export const DEFAULT_RENAME_SPEC = 'the genus discussed in the paper';
+// Front matter is enough to name a paper — title, abstract, first page of text.
+export const RENAME_PAGE_COUNT = 3;
+export const RENAME_CHAR_BUDGET = 12000;
+// Long enough for a binomial, short enough to stay clear of the ~255-character
+// path-component limit once a directory prefix and ".pdf" are added.
+export const MAX_FILE_NAME = 80;
+
+// Windows refuses these as file names whatever the extension (CON.pdf too).
+const RESERVED_NAMES = /^(?:CON|PRN|AUX|NUL|COM\d|LPT\d)$/i;
+// Allowlist rather than a blocklist: anything that is not a letter, digit,
+// space, hyphen, underscore or dot becomes a space. That covers path separators,
+// the characters Windows forbids, control characters and stray punctuation in
+// one rule, and it is the same set the prompt asks the model to stay inside.
+const DISALLOWED = /[^\p{L}\p{N} ._-]+/gu;
+
+/**
+ * Turn whatever the model said into something a filesystem will accept, without
+ * the ".pdf". Returns '' when nothing usable survives, which the caller treats
+ * as "no suggestion" rather than writing a file called "-".
+ */
+export function safeFileName(name) {
+  let s = String(name ?? '').trim();
+  // Strip an extension the model added itself, so "lions.pdf" -> "lions".
+  s = s.replace(/\.pdf$/i, '');
+  s = s.replace(DISALLOWED, ' ').replace(/\s+/g, ' ').trim();
+  // A leading dot hides the file on Unix; trailing dots and spaces are dropped
+  // by Windows, which would change the name out from under us after the fact.
+  // Both ends take dots and spaces together, so "../../etc" collapses cleanly
+  // once the separators have been stripped above.
+  s = s.replace(/^[. ]+/, '').replace(/[. ]+$/, '');
+  s = s.slice(0, MAX_FILE_NAME).replace(/[. ]+$/, '');
+  if (!s) return '';
+  return RESERVED_NAMES.test(s) ? `${s}_` : s;
+}
+
+/**
+ * Make `name` unique against `taken` (a Set of lower-cased names already
+ * claimed, extension included): "lions.pdf" -> "lions-2.pdf" -> "lions-3.pdf".
+ * Mutates `taken`, so a whole batch resolves in one pass.
+ */
+export function uniqueFileName(name, taken, ext = '.pdf') {
+  const base = name || 'untitled';
+  let candidate = `${base}${ext}`;
+  for (let n = 2; taken.has(candidate.toLowerCase()); n++) {
+    candidate = `${base}-${n}${ext}`;
+  }
+  taken.add(candidate.toLowerCase());
+  return candidate;
+}
+
+/**
+ * Prompt for naming one PDF.
+ *
+ * @param {object} p
+ * @param {string} p.fileName  the PDF's current name (often meaningless: "168766.pdf")
+ * @param {Array}  p.pages     [{page, text}] the opening pages
+ * @param {string} p.spec      what the name should be based on
+ */
+export function buildRenamePrompt({ fileName, pages, spec }) {
+  const want = (spec || '').trim() || DEFAULT_RENAME_SPEC;
+  const system =
+    `You are naming PDF files for CoordRippr, a tool that extracts geographic coordinates from ` +
+    `scientific papers. You are given the opening pages of one document and must propose a file name.\n\n` +
+    `The name must be: ${want}.\n\n` +
+    `Rules:\n` +
+    `- Return the name only — no directory, no ".pdf" extension, no quotes.\n` +
+    `- Keep it short: ideally ONE word, at most a few. Never a sentence or the full title.\n` +
+    `- Use only letters, digits, spaces, hyphens and underscores.\n` +
+    `- Base it strictly on the document text. If the text does not support a name, return "" — ` +
+    `never guess from the current file name.\n\n` +
+    `Respond with ONLY a JSON array of one object:\n` +
+    `[{"file": "<the file name you were given>", "name": "<proposed name or empty string>", ` +
+    `"note": "<one short sentence of reasoning>"}]`;
+  const lines = [`Current file name: ${fileName}`, '', 'DOCUMENT TEXT:'];
+  for (const p of pages) {
+    lines.push(`--- page ${p.page} ---`);
+    lines.push(p.text);
+  }
+  return { system, user: lines.join('\n') };
+}
+
+/**
+ * One raw rename result from the model -> {name, note}, or null when there is no
+ * usable suggestion. `name` has already been through safeFileName.
+ */
+export function normalizeRename(r) {
+  if (!r || typeof r !== 'object') return null;
+  const name = safeFileName(r.name);
+  if (!name) return null;
+  return {
+    name,
+    note: typeof r.note === 'string' ? r.note.trim().slice(0, 200) : '',
+  };
 }
 
 // ---------------------------------------------------------------------------

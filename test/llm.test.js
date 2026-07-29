@@ -22,6 +22,12 @@ import {
   DEFAULT_TEMPERATURE,
   MIN_TEMPERATURE,
   MAX_TEMPERATURE,
+  safeFileName,
+  uniqueFileName,
+  buildRenamePrompt,
+  normalizeRename,
+  DEFAULT_RENAME_SPEC,
+  MAX_FILE_NAME,
 } from '../src/llm.js';
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
@@ -560,4 +566,117 @@ test('concurrency and pacing constants are sane', () => {
   assert.ok(DEFAULT_CONCURRENCY >= 1 && DEFAULT_CONCURRENCY <= MAX_CONCURRENCY);
   assert.ok(MAX_CONCURRENCY >= 1);
   assert.ok(MAX_BATCH_DELAY_MS > 0);
+});
+
+// --- renaming PDFs ----------------------------------------------------------
+
+test('safeFileName keeps ordinary names intact', () => {
+  assert.equal(safeFileName('Xenopygus'), 'Xenopygus');
+  assert.equal(safeFileName('lions'), 'lions');
+  assert.equal(safeFileName('Panthera leo'), 'Panthera leo');
+  assert.equal(safeFileName('Nausicotus-removal_2'), 'Nausicotus-removal_2');
+  // An extension the model added itself is dropped, not doubled up.
+  assert.equal(safeFileName('lions.pdf'), 'lions');
+  assert.equal(safeFileName('  Xantho  '), 'Xantho');
+});
+
+test('safeFileName strips anything a filesystem would choke on', () => {
+  // Path separators and the characters Windows forbids. The separators are
+  // built from String.raw so the backslash cannot be lost to escaping.
+  assert.equal(safeFileName(String.raw`a/b\c:d*e?f"g<h>i|j`), 'a b c d e f g h i j');
+  assert.equal(safeFileName(String.raw`C:\Users\me\lions.pdf`), 'C Users me lions');
+  // No traversal can survive, whatever the model returns.
+  assert.equal(safeFileName('../../etc/passwd'), 'etc passwd');
+  assert.equal(safeFileName('..'), '');
+  // A leading dot would hide the file; trailing dots/spaces are dropped by
+  // Windows anyway, so they must not be part of the name we ask for.
+  assert.equal(safeFileName('.hidden'), 'hidden');
+  assert.equal(safeFileName('name.'), 'name');
+  assert.equal(safeFileName('name '), 'name');
+  // Nothing usable left means "no suggestion", not a file called "-".
+  assert.equal(safeFileName(''), '');
+  assert.equal(safeFileName('   '), '');
+  assert.equal(safeFileName('///'), '');
+  assert.equal(safeFileName(null), '');
+  assert.equal(safeFileName(undefined), '');
+});
+
+test('safeFileName sidesteps the Windows reserved names', () => {
+  for (const reserved of ['CON', 'con', 'PRN', 'AUX', 'NUL', 'COM1', 'LPT9']) {
+    assert.equal(safeFileName(reserved), `${reserved}_`);
+  }
+  // Only the exact names are reserved.
+  assert.equal(safeFileName('CONtext'), 'CONtext');
+  assert.equal(safeFileName('COM11'), 'COM11');
+});
+
+test('safeFileName clamps a rambling answer', () => {
+  const long = safeFileName('x'.repeat(500));
+  assert.equal(long.length, MAX_FILE_NAME);
+  // Clamping must not leave a trailing dot or space behind.
+  const clamped = safeFileName(`${'a'.repeat(MAX_FILE_NAME - 1)}. tail`);
+  assert.ok(!/[. ]$/.test(clamped));
+});
+
+test('safeFileName keeps non-ASCII letters', () => {
+  assert.equal(safeFileName('Volcán'), 'Volcán');
+  assert.equal(safeFileName('Potosí 2'), 'Potosí 2');
+});
+
+test('uniqueFileName numbers collisions instead of overwriting', () => {
+  const taken = new Set();
+  assert.equal(uniqueFileName('lions', taken), 'lions.pdf');
+  assert.equal(uniqueFileName('lions', taken), 'lions-2.pdf');
+  assert.equal(uniqueFileName('lions', taken), 'lions-3.pdf');
+  assert.equal(uniqueFileName('tigers', taken), 'tigers.pdf');
+  // Case-insensitive, because Windows and macOS are: LIONS has to skip past
+  // lions, lions-2 and lions-3 rather than collide with any of them.
+  assert.equal(uniqueFileName('LIONS', taken), 'LIONS-4.pdf');
+});
+
+test('buildRenamePrompt carries the naming spec and the pages', () => {
+  const { system, user } = buildRenamePrompt({
+    fileName: '168766.pdf',
+    pages: [{ page: 1, text: 'A revision of the genus Xenopygus Bernhauer' }],
+    spec: 'the genus discussed in the paper',
+  });
+  assert.match(system, /the genus discussed in the paper/);
+  assert.match(system, /ONE word/);
+  assert.match(system, /"file"/); // the JSON shape it must answer in
+  assert.match(user, /168766\.pdf/);
+  assert.match(user, /Xenopygus Bernhauer/);
+  assert.match(user, /page 1/);
+});
+
+test('buildRenamePrompt falls back to the default spec', () => {
+  for (const spec of ['', '   ', undefined, null]) {
+    const { system } = buildRenamePrompt({ fileName: 'a.pdf', pages: [], spec });
+    assert.match(system, new RegExp(DEFAULT_RENAME_SPEC));
+  }
+});
+
+test('normalizeRename sanitises what the model returned', () => {
+  assert.deepEqual(
+    normalizeRename({ file: '168766.pdf', name: 'Xenopygus.pdf', note: 'Title names the genus.' }),
+    { name: 'Xenopygus', note: 'Title names the genus.' }
+  );
+  assert.equal(normalizeRename({ name: '  ' }), null); // "I could not tell"
+  assert.equal(normalizeRename({ name: '' }), null);
+  assert.equal(normalizeRename({}), null);
+  assert.equal(normalizeRename(null), null);
+  assert.equal(normalizeRename('Xenopygus'), null); // not an object
+  // A note is optional and always a string.
+  assert.equal(normalizeRename({ name: 'Xantho' }).note, '');
+  assert.equal(normalizeRename({ name: 'Xantho', note: 42 }).note, '');
+});
+
+test('every provider offers models and a usable default', () => {
+  for (const [id, p] of Object.entries(PROVIDERS)) {
+    if (id === 'custom') continue; // deliberately blank — the user fills it in
+    assert.ok(p.models.length > 0, `${id} lists no models`);
+    assert.ok(p.models.includes(p.model), `${id}: default "${p.model}" is not in its model list`);
+    assert.ok(p.url.startsWith('https://'), `${id} needs an https endpoint`);
+    assert.ok(p.keyUrl.startsWith('https://'), `${id} needs a key page to link to`);
+    assert.equal(new Set(p.models).size, p.models.length, `${id} lists a model twice`);
+  }
 });

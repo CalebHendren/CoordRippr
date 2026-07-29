@@ -88,6 +88,42 @@ if (!window.coordrippr) {
       return a.download;
     },
 
+    // Project export/import. There is no `store` here on purpose: the browser
+    // build keeps its projects in IndexedDB (see src/persist.js), which in a
+    // real browser profile is durable — the file back end exists for Electron,
+    // where a reinstall can wipe the renderer's storage.
+    async saveJson({ defaultName, content, extension = 'crproj' }) {
+      const blob = new Blob([content], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = defaultName || `project.${extension}`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+      return a.download;
+    },
+
+    openJson({ extension = 'crproj' } = {}) {
+      return new Promise((resolve) => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = `.${extension},application/json`;
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        input.addEventListener('change', async () => {
+          const file = input.files && input.files[0];
+          input.remove();
+          resolve(file ? { path: file.name, content: await file.text() } : null);
+        });
+        input.addEventListener('cancel', () => { input.remove(); resolve(null); });
+        input.click();
+      });
+    },
+
+    async renamePdfs() {
+      throw new Error('Renaming files on disk is not possible in the browser build');
+    },
+
     async netFetch({ url, method = 'GET', headers = {}, body = null }) {
       if (!/^https:\/\//i.test(url)) throw new Error('Only https:// URLs are allowed');
       try {
