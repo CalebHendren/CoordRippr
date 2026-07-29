@@ -1,4 +1,13 @@
-:root {
+/* ---------------------------------------------------------------------------
+   Colour schemes
+   Every colour in this file comes from a variable, so a theme is nothing but a
+   new block below. `--accent-rgb` carries the accent as bare channels for the
+   translucent washes (row selection, fill preview, the active highlight ring),
+   which is why the accent can be retinted in one line.
+   The theme is applied by setting data-theme on <html> (see src/app.js).
+   --------------------------------------------------------------------------- */
+:root,
+:root[data-theme="default"] {
   --bg: #10141c;
   --panel: #171c26;
   --panel-2: #1d2330;
@@ -6,13 +15,118 @@
   --text: #dbe2ee;
   --muted: #8b96ab;
   --accent: #38bdf8;
+  --accent-rgb: 56, 189, 248;
   --accent-dim: #0e7490;
+  --accent-hover: #0891b2;
+  --accent-soft: #7dd3fc;
+  --input-focus: #0c2733;
+  --page-bg: #0b0e14;
   --hl: rgba(250, 204, 21, 0.42);
+  --hl-hover: rgba(250, 204, 21, 0.62);
   --hl-border: #f59e0b;
   --hl-active: rgba(56, 189, 248, 0.45);
   --hl-active-border: #38bdf8;
+  /* Hand-drawn marks, deliberately unlike the parser's yellow. */
+  --hl-manual: rgba(52, 211, 153, 0.38);
+  --hl-manual-border: #34d399;
   --danger: #f87171;
+  --danger-dim: #7f1d1d;
   --ok: #34d399;
+  --ok-fg: #06281c;
+  --warn: #fbbf24;
+  --warn-border: #b45309;
+  --on-accent: #fff;
+}
+
+/* The default, with every blue swapped for light purple. */
+:root[data-theme="amethyst"] {
+  --bg: #14101c;
+  --panel: #1b1726;
+  --panel-2: #241d33;
+  --border: #372c4a;
+  --text: #e4dcee;
+  --muted: #9b8ab3;
+  --accent: #c4b5fd;
+  --accent-rgb: 196, 181, 253;
+  --accent-dim: #6d28d9;
+  --accent-hover: #7c3aed;
+  --accent-soft: #ddd6fe;
+  --input-focus: #241a3d;
+  --page-bg: #0e0a16;
+  --hl: rgba(250, 204, 21, 0.42);
+  --hl-hover: rgba(250, 204, 21, 0.62);
+  --hl-border: #f59e0b;
+  --hl-active: rgba(196, 181, 253, 0.5);
+  --hl-active-border: #a78bfa;
+  --hl-manual: rgba(52, 211, 153, 0.38);
+  --hl-manual-border: #34d399;
+  --danger: #f87171;
+  --danger-dim: #7f1d1d;
+  --ok: #34d399;
+  --ok-fg: #06281c;
+  --warn: #fbbf24;
+  --warn-border: #b45309;
+  --on-accent: #fff;
+}
+
+:root[data-theme="dracula"] {
+  --bg: #282a36;
+  --panel: #21222c;
+  --panel-2: #343746;
+  --border: #44475a;
+  --text: #f8f8f2;
+  --muted: #8f92a8;
+  --accent: #bd93f9;
+  --accent-rgb: 189, 147, 249;
+  --accent-dim: #6272a4;
+  --accent-hover: #7b8cc4;
+  --accent-soft: #d6bbfc;
+  --input-focus: #343746;
+  --page-bg: #1b1c25;
+  --hl: rgba(241, 250, 140, 0.5);
+  --hl-hover: rgba(241, 250, 140, 0.72);
+  --hl-border: #ffb86c;
+  --hl-active: rgba(189, 147, 249, 0.5);
+  --hl-active-border: #bd93f9;
+  --hl-manual: rgba(80, 250, 123, 0.38);
+  --hl-manual-border: #50fa7b;
+  --danger: #ff5555;
+  --danger-dim: #772e2e;
+  --ok: #50fa7b;
+  --ok-fg: #10321c;
+  --warn: #ffb86c;
+  --warn-border: #a86b2c;
+  --on-accent: #282a36;
+}
+
+:root[data-theme="nord"] {
+  --bg: #2e3440;
+  --panel: #333a47;
+  --panel-2: #3b4252;
+  --border: #4c566a;
+  --text: #eceff4;
+  --muted: #94a1b5;
+  --accent: #88c0d0;
+  --accent-rgb: 136, 192, 208;
+  --accent-dim: #5e81ac;
+  --accent-hover: #6f93bd;
+  --accent-soft: #a8d4e0;
+  --input-focus: #3b4a55;
+  --page-bg: #262b35;
+  --hl: rgba(235, 203, 139, 0.5);
+  --hl-hover: rgba(235, 203, 139, 0.72);
+  --hl-border: #d08770;
+  --hl-active: rgba(136, 192, 208, 0.5);
+  --hl-active-border: #88c0d0;
+  --hl-manual: rgba(163, 190, 140, 0.45);
+  --hl-manual-border: #a3be8c;
+  --danger: #bf616a;
+  --danger-dim: #6d383d;
+  --ok: #a3be8c;
+  --ok-fg: #22301b;
+  --warn: #ebcb8b;
+  --warn-border: #997c46;
+  --on-accent: #2e3440;
 }
 
 * { box-sizing: border-box; }
@@ -30,10 +144,10 @@ button {
   padding: 4px 10px; cursor: pointer; font: inherit;
 }
 button:hover { border-color: var(--accent-dim); }
-button.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff; }
-button.primary:hover { background: #0891b2; }
+button.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: var(--on-accent); }
+button.primary:hover { background: var(--accent-hover); }
 button:disabled { opacity: 0.45; cursor: default; }
-button.danger { border-color: #7f1d1d; color: var(--danger); }
+button.danger { border-color: var(--danger-dim); color: var(--danger); }
 button.danger:hover { border-color: var(--danger); }
 
 input[type="text"], input[type="number"], select {
@@ -56,8 +170,10 @@ input:focus, select:focus { outline: 1px solid var(--accent-dim); }
 #format-group label { display: inline-flex; align-items: center; gap: 3px; }
 #project-select { max-width: 160px; }
 #project-group button { padding: 4px 7px; }
-#intensity { width: 90px; accent-color: var(--accent); }
-#intensity-name { min-width: 68px; }
+/* 12 steps need more travel than 7 did, and the level names got longer. */
+#intensity { width: 130px; accent-color: var(--accent); }
+#intensity-name { min-width: 116px; }
+#btn-mark.on { background: var(--accent-dim); border-color: var(--accent-dim); color: var(--on-accent); }
 
 /* ---------- layout ---------- */
 #split { display: flex; flex: 1; min-height: 0; }
@@ -94,15 +210,15 @@ input:focus, select:focus { outline: 1px solid var(--accent-dim); }
   padding: 4px 6px; font: inherit; color: var(--text);
 }
 #csv-table td.coord input { min-width: 118px; font-variant-numeric: tabular-nums; }
-#csv-table td input:focus { background: #0c2733; outline: none; }
+#csv-table td input:focus { background: var(--input-focus); outline: none; }
 #csv-table td input.invalid { color: var(--danger); text-decoration: underline wavy var(--danger); }
 #csv-table .rownum {
   background: var(--panel-2); color: var(--muted); text-align: right;
   padding: 4px 7px; cursor: pointer; min-width: 34px; font-variant-numeric: tabular-nums;
 }
-#csv-table tr.selected .rownum { background: var(--accent-dim); color: #fff; }
-#csv-table tr.active td { background: rgba(56, 189, 248, 0.10); }
-#csv-table tr.selected td { background: rgba(56, 189, 248, 0.06); }
+#csv-table tr.selected .rownum { background: var(--accent-dim); color: var(--on-accent); }
+#csv-table tr.active td { background: rgba(var(--accent-rgb), 0.10); }
+#csv-table tr.selected td { background: rgba(var(--accent-rgb), 0.06); }
 #csv-table td.srcinfo {
   color: var(--muted); padding: 4px 7px; font-size: 11px; white-space: nowrap;
   border-left: 2px solid var(--border); background: var(--panel);
@@ -110,6 +226,16 @@ input:focus, select:focus { outline: 1px solid var(--accent-dim); }
 th.srcinfo { color: var(--muted); font-size: 11px; }
 #csv-table th.notescol, #csv-table td.notescol { border-left: 2px solid var(--border); }
 #csv-table td.notescol input { min-width: 180px; }
+
+/* ---------- degree / minute / second palette ---------- */
+.symbol-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.symbol-bar button.sym {
+  min-width: 26px; padding: 2px 7px; font-size: 14px; line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.symbol-bar button.sym:hover { border-color: var(--accent); color: var(--accent); }
+/* In the mark dialog the palette sits under the two coordinate fields. */
+#mark-dialog .symbol-bar { margin-top: 10px; }
 
 /* ---------- Excel-style drag-to-fill ---------- */
 #fill-handle {
@@ -122,7 +248,7 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
 #csv-scroll.filling { cursor: crosshair; }
 #csv-scroll.filling #csv-table td input { cursor: crosshair; }
 #csv-table td.fill-target {
-  background: rgba(56, 189, 248, 0.16) !important;
+  background: rgba(var(--accent-rgb), 0.16) !important;
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
@@ -182,7 +308,7 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
 }
 .hidden-toggle:hover { color: var(--text); background: var(--panel-2); }
 
-#pages-scroll { flex: 1; overflow: auto; background: #0b0e14; position: relative; }
+#pages-scroll { flex: 1; overflow: auto; background: var(--page-bg); position: relative; }
 #pages { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 18px; }
 .page-wrap { position: relative; box-shadow: 0 2px 14px rgba(0,0,0,0.55); background: #fff; }
 .page-wrap canvas { display: block; }
@@ -194,10 +320,24 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
   border-radius: 2px; cursor: pointer; z-index: 3;
 }
 #pages.no-hl .hl { display: none; }
-.hl:hover { background: rgba(250, 204, 21, 0.62); }
+.hl:hover { background: var(--hl-hover); }
 .hl.active {
   background: var(--hl-active); border-color: var(--hl-active-border);
-  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.35);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.35);
+}
+/* Drawn by hand rather than found by the parser — a different colour so it is
+   obvious at a glance which coordinates came from where. */
+.hl.manual { background: var(--hl-manual); border-color: var(--hl-manual-border); border-style: dashed; }
+.hl.manual:hover { background: var(--hl-manual); filter: brightness(1.25); }
+
+/* ---------- marking a coordinate by hand ---------- */
+#pages.marking .page-wrap { cursor: crosshair; }
+/* The highlights would otherwise swallow the mousedown that starts a drag. */
+#pages.marking .hl { pointer-events: none; }
+#mark-box {
+  position: absolute; z-index: 6; pointer-events: none;
+  background: rgba(var(--accent-rgb), 0.18);
+  border: 1px dashed var(--accent);
 }
 
 #footer {
@@ -210,13 +350,15 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
 }
 #status.busy { color: var(--accent); }
 #footer-right { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+#theme-picker { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+#theme-select { padding: 1px 4px; font-size: 12px; max-width: 120px; }
 button.linkish {
   background: none; border: none; padding: 2px 4px; color: var(--muted);
   text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
 }
 button.linkish:hover { color: var(--accent); }
 #update-chip {
-  background: var(--ok); color: #06281c; border-radius: 10px;
+  background: var(--ok); color: var(--ok-fg); border-radius: 10px;
   padding: 1px 10px; font-weight: 600; cursor: pointer;
 }
 .hidden { display: none !important; }
@@ -231,8 +373,8 @@ dialog {
 dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 dialog h2 { margin: 0 0 10px; font-size: 16px; }
 .warn-banner {
-  background: rgba(245, 158, 11, 0.12); border: 1px solid #b45309;
-  color: #fbbf24; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px;
+  background: rgba(245, 158, 11, 0.12); border: 1px solid var(--warn-border);
+  color: var(--warn); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px;
   line-height: 1.5;
 }
 .llm-grid {
@@ -304,7 +446,7 @@ dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 8px 0 
   cursor: default;
 }
 .llm-badge.ok { background: rgba(52, 211, 153, 0.18); color: var(--ok); }
-.llm-badge.mismatch { background: rgba(245, 158, 11, 0.2); color: #fbbf24; cursor: pointer; }
+.llm-badge.mismatch { background: rgba(245, 158, 11, 0.2); color: var(--warn); cursor: pointer; }
 .llm-badge.not_found { background: rgba(148, 163, 184, 0.18); color: var(--muted); }
 .llm-badge.del { background: rgba(248, 113, 113, 0.18); color: var(--danger); cursor: pointer; }
 .llm-grid label.danger-opt { color: var(--danger); margin-left: 18px; }
@@ -314,12 +456,64 @@ button.key-link {
   align-self: flex-start; margin-top: 2px; text-align: left;
   color: var(--accent);
 }
-button.key-link:hover { color: #7dd3fc; }
+button.key-link:hover { color: var(--accent-soft); }
 
 /* ---------- name dialog ---------- */
 #name-dialog { width: min(360px, 92vw); }
 #name-dialog h2 { margin: 0 0 10px; font-size: 15px; }
 #name-input { width: 100%; }
+
+/* ---------- LLM rename section ---------- */
+#llm-rename-fs { flex-direction: column; align-items: stretch; gap: 6px; }
+.llm-grid fieldset label.rename-spec { flex-direction: column; align-items: stretch; gap: 3px; color: var(--muted); }
+.rename-hint { margin: 0; font-size: 11px; line-height: 1.45; }
+#llm-rename-run { align-self: flex-start; color: var(--accent); }
+
+/* ---------- mark-a-coordinate dialog ---------- */
+#mark-dialog { width: min(520px, 92vw); }
+#mark-dialog h2 { margin: 0 0 8px; font-size: 15px; }
+.mark-intro { margin: 0 0 12px; line-height: 1.5; }
+.mark-found { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; }
+.mark-text {
+  margin: 0; max-height: 84px; overflow: auto; user-select: text;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; white-space: pre-wrap; word-break: break-word;
+  font: 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+.mark-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.mark-grid label { display: flex; flex-direction: column; gap: 3px; }
+fieldset.mark-target {
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  display: flex; gap: 18px; margin: 12px 0 0;
+}
+fieldset.mark-target legend { color: var(--muted); padding: 0 4px; }
+fieldset.mark-target label { display: flex; align-items: center; gap: 6px; }
+#mark-status { margin: 10px 0 2px; min-height: 18px; }
+
+/* ---------- export / rename review dialogs ---------- */
+#export-dialog { width: min(480px, 92vw); }
+#export-dialog h2, #rename-dialog h2 { margin: 0 0 8px; font-size: 15px; }
+#export-dialog p, #rename-dialog p { margin: 0 0 12px; line-height: 1.5; }
+#export-status, #rename-status { margin: 12px 0 2px; min-height: 18px; }
+
+#rename-dialog { width: min(680px, 94vw); }
+#rename-dialog fieldset.dedup-opts label { flex-wrap: wrap; }
+#rename-subfolder { width: 130px; }
+.rename-list {
+  display: flex; flex-direction: column; gap: 4px; margin-top: 12px;
+  max-height: 44vh; overflow-y: auto;
+}
+.rename-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px;
+}
+.rename-row .old { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rename-row .arrow { color: var(--muted); flex: none; }
+.rename-row input[type="text"] { flex: 1; min-width: 0; }
+.rename-row .note { flex-basis: 100%; color: var(--muted); font-size: 11px; margin-left: 24px; }
+.rename-row.skipped { opacity: 0.55; }
+.rename-row.done { border-color: var(--ok); }
+.rename-row.failed { border-color: var(--danger); }
 
 /* ---------- de-duplication dialog ---------- */
 #dedup-dialog { width: min(460px, 92vw); }

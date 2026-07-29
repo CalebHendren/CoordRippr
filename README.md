@@ -19,9 +19,21 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   column headers, and settings. Create, rename, and delete from the toolbar
   (`＋` / `✎` / `🗑`). State is saved per project.
 - **Session persistence** — Files, extracted rows, edits, output format, zoom,
-  and deletions are snapshotted to local storage as you work and restored on the
-  next launch, including drag-and-dropped PDFs. Uses IndexedDB; if it is
-  unavailable the app runs without persistence.
+  and deletions are snapshotted as you work and restored on the next launch,
+  including drag-and-dropped PDFs.
+  - The desktop app keeps projects as plain files in its data folder
+    (`%APPDATA%\CoordRippr\data` on Windows, `~/Library/Application Support/…`
+    on macOS, `~/.config/…` on Linux), so **they survive app updates and
+    reinstalls**. *Data folder…* in the footer moves that folder anywhere you
+    like — put it in OneDrive or Dropbox and your projects follow you between
+    machines. Projects from older versions are migrated automatically on first
+    launch.
+  - The browser build uses IndexedDB; if it is unavailable the app runs without
+    persistence.
+- **Export / import projects** — `📤` writes the whole project (rows, edits,
+  headers, per-PDF settings, highlights, and optionally copies of the PDFs) to a
+  single `.crproj` file; `📥` loads one back into a new project. A backup you can
+  keep, hand to a colleague, or restore on another machine.
 - **Batch scanning** — Opening a folder scans every PDF within it recursively.
   Individual file selection and drag-and-drop are also supported.
 - **Detection** — Recognizes decimal degrees (`41.40338, 2.17403`) and DMS
@@ -30,28 +42,46 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   - minute/second ticks: `'` `′` `’` `` ` `` `´`, `"` `″` `”`, and doubled ticks
   - hemisphere as a letter (`N`, `s`, and `O` for Spanish/Portuguese *Oeste* /
     French *Ouest* = West) or word (`South`, `West`, `Oeste`, `Ouest`), leading
-    or trailing
+    or trailing — a trailing one wins when both are present, since a leading
+    letter is usually the orphan of a coordinate that failed to parse. Hemisphere
+    words only count at the start of a word, so `at least 14` is not `east 14`
+  - degrees spelled out where they touch the number (`10Deg 32'S`), but not
+    detached prose (`rotated 30 degrees`)
+  - a coordinate whose degrees the typesetter dropped, leaving minutes and a
+    hemisphere (`100 ft., 17' N 104°46' W`)
   - `Lat.` / `Long.` labels, space-separated DMS (`40 26 46 N`), decimal commas
   - pairs split across line breaks, including across a page boundary (latitude at
     the foot of one page, longitude at the top of the next), and a single
     coordinate wrapped onto an indented continuation line
     (`104°`⏎`      43'46"W`) without losing the minutes/seconds
 - **Detection intensity** — A toolbar slider controls parser aggressiveness over
-  a seven-step net, *Strictest* (1) to *Everything* (7), with **Balanced** (5)
-  the default. The four strictest steps give fine control over false positives —
-  the pairing requirement loosens one notch at a time:
-  1. **Strictest** — both halves strong (°, hemisphere, …); nothing kept alone
-  2. **Strict** — both halves strong, but a lone strong coordinate is kept
-  3. **Firm** — a strong half pairs only with another solid (≥ medium) half
-  4. **Careful** — a strong half may pair with a weaker partner
-  5. **Balanced** — the classic CoordRippr net (default)
-  6. **Wide** — single-decimal numbers can pair, bigger gaps allowed
-  7. **Everything** — even bare integer pairs; expect false positives
+  a twelve-step net, *Strictest* (1) to *Everything* (12), with **Strictest**
+  the default — on real journal text it has by far the best precision, and the
+  net is there to be widened when a document needs it. Two things loosen as the
+  level rises: how strong each half of a pair must be, and how much text may sit
+  between them.
+
+  | # | Level | Pairing rule |
+  | --- | --- | --- |
+  | 1 | **Strictest** (default) | both halves strong (°, hemisphere, …); nothing kept alone |
+  | 2 | Strict | both halves strong, but a lone strong coordinate is kept |
+  | 3 | Firm | a strong half pairs only with another solid (≥ medium) half |
+  | 4 | Firm (wider gap) | as Firm, more text allowed between the halves |
+  | 5 | Careful | a strong half may pair with a weaker partner |
+  | 6 | Careful (wider gap) | as Careful, more text allowed between the halves |
+  | 7 | Balanced | the classic CoordRippr net |
+  | 8 | Balanced (wider gap) | as Balanced, more text allowed between the halves |
+  | 9 | Wide | single-decimal numbers can pair, bigger gaps allowed |
+  | 10 | Wide (keeps lone medium) | as Wide, and a lone medium coordinate survives |
+  | 11 | Everything | even bare integer pairs; expect false positives |
+  | 12 | Everything (max gap) | as Everything, halves allowed far apart |
 
   Changing it re-scans the loaded PDFs in place, preserving edits, filled
-  columns, and deletions.
+  columns, deletions, and hand-marked coordinates. Projects saved by earlier
+  versions keep the net they were scanned with (the old seven steps map onto
+  1, 2, 3, 5, 7, 9 and 11).
   - **Per-PDF net** — each PDF in the file list has its own *Net* picker.
-    *Auto* follows the global slider; pick a level (1–7) to pin just that PDF to
+    *Auto* follows the global slider; pick a level (1–12) to pin just that PDF to
     a more aggressive (or stricter) net than the rest of the batch — useful for
     one messy document among clean ones. The override re-scans only that PDF (in
     place, edits preserved) and is saved with the session.
@@ -67,6 +97,15 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   matched text; the *Highlights* toggle hides the boxes. Clicking a CSV row
   scrolls to its highlight in the PDF, and clicking a highlight scrolls to its
   CSV row.
+- **Mark a coordinate by hand** — Some coordinates are simply not in the text
+  layer: the degrees were dropped by the typesetter, the glyphs came out as
+  garbage, the page is a scan. Press *✥ Mark coord*, drag a box around the
+  coordinate on the page, and type the values. CoordRippr reads whatever text
+  sits under the box and pre-fills the fields, so usually you only correct it.
+  The box becomes a green dashed highlight linked to its row in both directions,
+  it is baked into the highlighted-PDF export, and re-scans and net changes leave
+  it alone. With a single row selected you can attach the box to that row instead
+  of creating a new one.
 - **CSV table** — Editable table with a header row:
   - Columns 1–2 are user-defined (editable headers, **Genus** / **Species** by
     default); latitude/longitude occupy columns 3–4.
@@ -76,8 +115,14 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     unparseable input is retained and flagged.
   - Range/selection fill for columns 1–2; `Ctrl+D` copies the cell above; row
     selection via shift/ctrl-click on the row numbers; add and delete rows.
+    *+ Row* inserts directly **below the selected row** (at the end when nothing
+    is selected).
   - *Remove Duplicates…* reports a count before applying, and can be restricted
     to rows that also match on columns 1–2 and/or originate from the same PDF.
+  - *↩ Restore Deleted* — deleting a row also suppresses that detection for good,
+    through re-scans and every net level. The button appears with a count
+    whenever a project has suppressed detections and forgets them all, so a row
+    deleted by mistake can come back.
 - **Export** — CSV with a UTF-8 BOM for correct degree-symbol rendering in Excel.
 - **LLM Assist** (requires an API key) — Sends page text to an LLM to verify the
   extracted coordinates and to populate the data columns from the surrounding
@@ -148,9 +193,25 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
       (flagged rows are sent to a second model).
   - Optional LLM-filled **Notes** column with a free-text description of what the
     notes should contain.
+  - **Rename PDFs** — papers often arrive as `168766.pdf`. Tick *Suggest a file
+    name for each selected PDF* (or press *Suggest names now…*) and the model
+    reads the opening pages of each ticked PDF and proposes a name; by default
+    *the genus discussed in the paper*, so `168766.pdf` becomes `Xenopygus.pdf`.
+    Every suggestion lands in a review window where you can edit the names and
+    untick any you want left alone — **nothing on disk changes until you press
+    Apply**. Apply writes copies into a subfolder (`renamed` by default) and
+    leaves the originals untouched; renaming the originals in place is a separate,
+    confirmed choice. Names are sanitised for the filesystem and de-duplicated,
+    and an existing file is never overwritten. In the browser build, Apply
+    downloads the renamed copies instead.
   - LLM output is not authoritative. Verify all results against the source PDFs.
 
   ![The LLM Assist dialog showing the Genus and Species extraction toggles, the two-model delete-confirmation option with its risk note, and the second-model section, configured to run DeepSeek first and use Claude for retries and delete confirmation](docs/llm-assist.png)
+- **Colour schemes** — 🎨 in the footer switches the whole window between
+  **Midnight** (the original), **Amethyst** (Midnight with the blues replaced by
+  light purple), **Dracula** and **Nord**. Highlight colours are tuned per theme
+  so detections stay legible over a white page. The choice is saved with your
+  other settings, so it survives updates too.
 - **Update check** — Compares the running version against the latest GitHub
   release daily, and via a *Check for updates* button in the footer. Nothing is
   downloaded automatically.
@@ -200,7 +261,9 @@ Actions". Browser-build caveats:
    project is restored on the next launch.
 2. Review the right panel: only pages with detections are shown, with hits
    highlighted. Hover a highlight to see the matched text. Adjust the **Net**
-   slider to re-scan if the parser is too greedy or too conservative.
+   slider to re-scan if the parser is too conservative (or, higher up, too
+   greedy) — it starts at *Strictest*. For a coordinate the parser cannot read
+   at any level, use **✥ Mark coord** and draw a box around it.
 3. Fill columns 1–2 (site names, notes, etc.). For repeated values, use the
    *Fill* bar: select the column, a row range, and a value, then *Apply*.
 4. Select the coordinate output format in the toolbar (DD / DMS / Both).
@@ -234,8 +297,10 @@ Key modules:
 - `src/llm.js` — provider presets, request/response formats, prompt
   construction, work chunking, and the concurrency runners. Pure module, unit-
   tested.
-- `src/persist.js` — IndexedDB-backed projects and session snapshots
-  (`packState` / `unpackState` are pure and unit-tested).
+- `src/persist.js` — projects and session snapshots over two interchangeable
+  back ends: plain files in the data folder (Electron) and IndexedDB (browser).
+  `packState` / `unpackState` / `migrateSnapshot` are pure and unit-tested.
+- `src/projectio.js` — the portable `.crproj` export bundle. Pure module.
 - `src/pdftext.js` — pdf.js text items to a searchable string plus
   match-to-rectangle mapping.
 - `tools/make-sample-pdf.mjs` — regenerates `test/fixtures/sample.pdf`, the

@@ -1,8 +1,12 @@
-// CoordRippr persistence: projects + session snapshots + PDF bytes in IndexedDB,
-// so Electron and browser builds resume where the user left off.
-// packState/unpackState are pure (node --test); `storage` is the IndexedDB glue.
+// CoordRippr persistence: projects + session snapshots + PDF bytes, so Electron
+// and browser builds resume where the user left off. packState/unpackState and
+// migrateSnapshot are pure (node --test); below them sit two interchangeable
+// back ends — plain files on disk (Electron) and IndexedDB (browser).
 
-export const SNAPSHOT_VERSION = 2;
+import { DEFAULT_INTENSITY, LEGACY_INTENSITY_MAP } from './coords.js';
+
+// 3: the detection net went from 7 steps to 12 (see migrateSnapshot).
+export const SNAPSHOT_VERSION = 3;
 
 // ---------------------------------------------------------------------------
 // Pure snapshot packing / unpacking
@@ -40,6 +44,9 @@ export function packState(state, nextId) {
       id: d.id, fileId: d.fileId, pageNum: d.pageNum,
       rects: d.rects, rowId: d.rowId, half: d.half, raw: d.raw,
       span: d.span || null,
+      // Drawn by hand over the page rather than found by the parser. Kept out of
+      // re-scans and never suppressed (it has no text offset to key on).
+      ...(d.manual ? { manual: true } : {}),
     })),
     rows: state.rows.map((r) => ({
       id: r.id, cells: [...(r.cells || [])], notes: r.notes || '',
@@ -52,10 +59,40 @@ export function packState(state, nextId) {
 }
 
 /**
+ * Bring an older snapshot up to SNAPSHOT_VERSION. Returns a new object; the
+ * input is left alone. Unknown/newer versions pass through untouched.
+ *
+ * v2 -> v3: the detection net grew from 7 steps to 12. Every old level still
+ * exists, just under a new number (LEGACY_INTENSITY_MAP), so a restored project
+ * keeps scanning exactly as it did. A v2 snapshot that never stored an intensity
+ * predates the per-project setting and was scanned at the old default,
+ * Balanced — level 7 on the new scale, NOT the new default of 1.
+ */
+export function migrateSnapshot(snap) {
+  if (!snap || typeof snap !== 'object') return snap;
+  const v = Number(snap.v) || 1;
+  if (v >= 3) return snap;
+  const remap = (level) => (typeof level === 'number' ? LEGACY_INTENSITY_MAP[level] ?? level : level);
+  return {
+    ...snap,
+    v: SNAPSHOT_VERSION,
+    intensity: typeof snap.intensity === 'number' ? remap(snap.intensity) : 7,
+    // Leave a missing/!Array `files` exactly as it was: unpackState uses it to
+    // decide the snapshot is unusable, and inventing an empty array here would
+    // turn garbage into an apparently valid empty session.
+    ...(Array.isArray(snap.files)
+      ? { files: snap.files.map((f) => ({ ...f, intensity: remap(f && f.intensity) })) }
+      : {}),
+  };
+}
+
+/**
  * Snapshot -> state fields. null when the snapshot is unusable. Files come back
  * without `doc`/page proxies; the caller re-opens the PDFs and reattaches them.
+ * Older snapshots are migrated on the way through.
  */
-export function unpackState(snap) {
+export function unpackState(rawSnap) {
+  const snap = migrateSnapshot(rawSnap);
   if (!snap || typeof snap !== 'object' || !Array.isArray(snap.files)) return null;
   const dets = new Map();
   for (const d of snap.dets || []) {
@@ -97,7 +134,7 @@ export function unpackState(snap) {
     showAll: !!snap.showAll,
     showHighlights: snap.showHighlights !== false, // default on when the field is absent
     zoom: typeof snap.zoom === 'number' ? snap.zoom : 1.4,
-    intensity: typeof snap.intensity === 'number' ? snap.intensity : 5, // Balanced (DEFAULT_INTENSITY)
+    intensity: typeof snap.intensity === 'number' ? snap.intensity : DEFAULT_INTENSITY,
     currentFile: snap.currentFile ?? null,
     suppressed: new Set(Array.isArray(snap.suppressed) ? snap.suppressed : []),
     files,
@@ -107,7 +144,7 @@ export function unpackState(snap) {
 }
 
 // ---------------------------------------------------------------------------
-// IndexedDB glue
+// IndexedDB back end (browser build)
 // ---------------------------------------------------------------------------
 
 const DB_NAME = 'coordrippr';
@@ -163,7 +200,8 @@ async function idbDelete(store, keyOrRange) {
 const pdfKey = (projectId, fileId) => `${projectId}:${fileId}`;
 const pdfRange = (projectId) => IDBKeyRange.bound(`${projectId}:`, `${projectId}:\uffff`);
 
-export const storage = {
+export const idbStorage = {
+  kind: 'indexeddb',
   async listProjects() {
     return (await idbGet(META, 'projects')) || [];
   },
@@ -192,4 +230,149 @@ export const storage = {
     await idbDelete(SNAPSHOTS, projectId);
     await idbDelete(PDFS, pdfRange(projectId));
   },
+  async getSettings() {
+    return (await idbGet(META, 'settings')) || {};
+  },
+  async saveSettings(obj) {
+    await idbPut(META, 'settings', obj);
+  },
 };
+
+// ---------------------------------------------------------------------------
+// File back end (Electron)
+//
+// Chromium keeps a file:// renderer's IndexedDB inside the browser profile, and
+// that is what goes missing when the app is reinstalled over itself — projects
+// vanish on update even though nothing deleted them. Plain JSON and PDF files in
+// the app's data folder have no such lifecycle: they survive updates, they can
+// be backed up or synced, and the user can point the folder somewhere else.
+//
+//   projects.json                    [{id,name,createdAt,updatedAt}]
+//   active.json                      {"id": "p…"}
+//   settings.json                    {theme, llm:{…}}
+//   projects/<id>/snapshot.json
+//   projects/<id>/pdfs/<fileId>.pdf
+// ---------------------------------------------------------------------------
+
+const projDir = (projectId) => `projects/${projectId}`;
+
+function makeFileStorage(store) {
+  const readJson = async (rel, fallback) => {
+    try {
+      const text = await store.read(rel);
+      // These are plain files a user can open and edit; a Windows editor will
+      // happily add a byte-order mark, which JSON.parse refuses. Stripping it
+      // beats silently falling back and looking like the settings were lost.
+      return text ? JSON.parse(text.replace(/^\uFEFF/, '')) : fallback;
+    } catch {
+      return fallback; // absent or corrupt: start clean rather than wedge the app
+    }
+  };
+  const writeJson = (rel, value) => store.write(rel, JSON.stringify(value));
+
+  return {
+    kind: 'file',
+    listProjects: () => readJson('projects.json', []),
+    saveProjects: (list) => writeJson('projects.json', list),
+    async getActiveProject() {
+      return (await readJson('active.json', {})).id ?? null;
+    },
+    setActiveProject: (id) => writeJson('active.json', { id }),
+    loadSnapshot: (projectId) => readJson(`${projDir(projectId)}/snapshot.json`, null),
+    saveSnapshot: (projectId, snapshot) => writeJson(`${projDir(projectId)}/snapshot.json`, snapshot),
+    async savePdf(projectId, fileId, name, bytes) {
+      await store.writeBin(`${projDir(projectId)}/pdfs/${fileId}.pdf`, bytes);
+      const names = await readJson(`${projDir(projectId)}/pdfs/names.json`, {});
+      if (names[fileId] !== name) {
+        names[fileId] = name;
+        await writeJson(`${projDir(projectId)}/pdfs/names.json`, names);
+      }
+    },
+    async loadPdf(projectId, fileId) {
+      const bytes = await store.readBin(`${projDir(projectId)}/pdfs/${fileId}.pdf`);
+      if (!bytes) return null;
+      const names = await readJson(`${projDir(projectId)}/pdfs/names.json`, {});
+      return { name: names[fileId] || `${fileId}.pdf`, bytes };
+    },
+    deleteProject: (projectId) => store.remove(projDir(projectId)),
+    getSettings: () => readJson('settings.json', {}),
+    saveSettings: (obj) => writeJson('settings.json', obj),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Back-end selection + settings
+// ---------------------------------------------------------------------------
+
+// `store` only exists in the Electron preload; the browser build keeps IndexedDB.
+const nativeStore = typeof window !== 'undefined' && window.coordrippr && window.coordrippr.store;
+export const storage = nativeStore ? makeFileStorage(nativeStore) : idbStorage;
+
+/**
+ * One-time lift of everything in IndexedDB into the file store, for users
+ * upgrading from a build that only had IndexedDB. Nothing is deleted from
+ * IndexedDB — if this goes wrong the old copy is still there.
+ * No-op unless the file store is active and empty.
+ * @returns {Promise<number>} how many projects were carried over
+ */
+export async function migrateIdbToFiles() {
+  if (storage.kind !== 'file') return 0;
+  const settings = await storage.getSettings();
+  if (settings.migratedFromIdb) return 0;
+  let moved = 0;
+  try {
+    if ((await storage.listProjects()).length === 0) {
+      const projects = await idbStorage.listProjects();
+      for (const p of projects) {
+        const snap = await idbStorage.loadSnapshot(p.id);
+        if (snap) await storage.saveSnapshot(p.id, snap);
+        for (const f of (snap && snap.files) || []) {
+          const pdf = await idbStorage.loadPdf(p.id, f.id).catch(() => null);
+          if (pdf && pdf.bytes) await storage.savePdf(p.id, f.id, pdf.name || f.name, pdf.bytes);
+        }
+        moved++;
+      }
+      if (moved) {
+        await storage.saveProjects(projects);
+        const active = await idbStorage.getActiveProject();
+        if (active) await storage.setActiveProject(active);
+      }
+    }
+  } catch {
+    // No IndexedDB (or it is unreadable): nothing to carry over.
+  }
+  await storage.saveSettings({ ...(await storage.getSettings()), migratedFromIdb: true });
+  return moved;
+}
+
+/**
+ * Read one key out of the app-wide settings blob (theme, LLM prefs, …). These
+ * used to live in localStorage, which disappears with IndexedDB on reinstall —
+ * `legacyKey` names the old localStorage entry so it is adopted once and then
+ * follows the projects into the durable store.
+ */
+export async function getSetting(key, fallback = null, legacyKey = null) {
+  let settings = {};
+  try { settings = await storage.getSettings(); } catch { /* unavailable */ }
+  if (settings[key] !== undefined) return settings[key];
+  if (legacyKey) {
+    try {
+      const raw = localStorage.getItem(legacyKey);
+      if (raw != null) {
+        const value = JSON.parse(raw);
+        await setSetting(key, value);
+        return value;
+      }
+    } catch { /* absent or not JSON */ }
+  }
+  return fallback;
+}
+
+/** Write one key into the app-wide settings blob. Failures are non-fatal. */
+export async function setSetting(key, value) {
+  try {
+    await storage.saveSettings({ ...(await storage.getSettings()), [key]: value });
+  } catch (err) {
+    console.warn('CoordRippr: could not save setting', key, err);
+  }
+}

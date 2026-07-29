@@ -2,7 +2,8 @@
 // to run unless you changed persist.js. Prereq: `npm install`. Run: `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { packState, unpackState, SNAPSHOT_VERSION } from '../src/persist.js';
+import { packState, unpackState, migrateSnapshot, SNAPSHOT_VERSION } from '../src/persist.js';
+import { DEFAULT_INTENSITY, LEGACY_INTENSITY_MAP } from '../src/coords.js';
 
 function sampleState() {
   const dets = new Map();
@@ -120,11 +121,114 @@ test('unpackState rejects garbage and fills defaults', () => {
   assert.equal(minimal.fmt, 'dd');
   assert.equal(minimal.showHighlights, true); // default on when the field is absent
   assert.equal(minimal.zoom, 1.4);
-  assert.equal(minimal.intensity, 5); // Balanced default when the field is absent
+  assert.equal(minimal.intensity, DEFAULT_INTENSITY); // strictest for a current snapshot
   assert.equal(minimal.nextId, 1);
   assert.deepEqual(minimal.cols, ['Genus', 'Species']);
   assert.equal(minimal.notesOn, false);
   assert.deepEqual(minimal.rows, []);
   assert.equal(minimal.dets.size, 0);
   assert.equal(minimal.suppressed.size, 0);
+});
+
+// --- snapshot v2 -> v3 migration (the 7-step net became 12 steps) -----------
+
+test('migrateSnapshot remaps old net levels, global and per-PDF', () => {
+  const v2 = {
+    v: 2,
+    intensity: 5, // old "Balanced"
+    files: [
+      { id: 'f1', name: 'a.pdf', intensity: 7 }, // old per-PDF "Everything"
+      { id: 'f2', name: 'b.pdf', intensity: null }, // follows the global net
+      { id: 'f3', name: 'c.pdf', intensity: 1 }, // strictest, unchanged
+    ],
+  };
+  const out = migrateSnapshot(v2);
+  assert.equal(out.v, SNAPSHOT_VERSION);
+  assert.equal(out.intensity, LEGACY_INTENSITY_MAP[5]); // 5 -> 7
+  assert.equal(out.files[0].intensity, LEGACY_INTENSITY_MAP[7]); // 7 -> 11
+  assert.equal(out.files[1].intensity, null);
+  assert.equal(out.files[2].intensity, 1);
+  // The input is not touched.
+  assert.equal(v2.intensity, 5);
+  assert.equal(v2.files[0].intensity, 7);
+});
+
+test('a v2 snapshot with no net recorded keeps the old default, not the new one', () => {
+  // Those sessions were scanned with the old Balanced net; silently restoring
+  // them at the new strictest default would drop rows the user already had.
+  const out = migrateSnapshot({ v: 2, files: [] });
+  assert.equal(out.intensity, 7); // old Balanced on the new scale
+  assert.notEqual(out.intensity, DEFAULT_INTENSITY);
+});
+
+test('a current snapshot passes through migrateSnapshot untouched', () => {
+  const v3 = { v: SNAPSHOT_VERSION, intensity: 4, files: [{ id: 'f1', intensity: 12 }] };
+  assert.equal(migrateSnapshot(v3), v3);
+});
+
+test('unpackState migrates an old snapshot on the way through', () => {
+  const restored = unpackState({
+    v: 2, intensity: 6, files: [{ id: 'f1', name: 'a.pdf', numPages: 1, intensity: 4, pages: [] }],
+  });
+  assert.equal(restored.intensity, LEGACY_INTENSITY_MAP[6]); // 6 -> 9
+  assert.equal(restored.files[0].intensity, LEGACY_INTENSITY_MAP[4]); // 4 -> 5
+});
+
+// --- hand-drawn coordinate marks --------------------------------------------
+
+test('manual detections and their rows survive a snapshot round-trip', () => {
+  const dets = new Map();
+  dets.set('d9', {
+    id: 'd9', fileId: 'f1', pageNum: 4,
+    rects: [[10, 20, 90, 32]], rowId: 'r9', half: 'lat',
+    raw: "17' N 104°46' W", span: null, manual: true,
+  });
+  const state = {
+    files: [{
+      id: 'f1', name: 'paper.pdf', path: null, doc: null, error: null, numPages: 4,
+      intensity: null, hidden: false,
+      pages: [{ num: 4, w: 612, h: 792, proxy: null, dets: ['d9'] }],
+    }],
+    dets,
+    rows: [{
+      id: 'r9', cells: ['', ''], notes: '', lat: 17, lon: -104.76667,
+      latRaw: null, lonRaw: null,
+      src: { fileId: 'f1', pageNum: 4, latDet: 'd9', lonDet: null, extraDets: [], manual: true },
+    }],
+    cols: ['Genus', 'Species'],
+    notesOn: false, fmt: 'dd', showAll: false, showHighlights: true,
+    zoom: 1.4, intensity: 1, currentFile: 'f1', suppressed: new Set(),
+  };
+  const restored = unpackState(JSON.parse(JSON.stringify(packState(state, 10))));
+  const det = restored.dets.get('d9');
+  assert.equal(det.manual, true);
+  assert.equal(det.span, null); // no text offset, so deleting it suppresses nothing
+  assert.equal(restored.rows[0].src.manual, true);
+  assert.equal(restored.rows[0].src.latDet, 'd9');
+});
+
+test('parser detections do not gain a manual flag', () => {
+  const dets = new Map();
+  dets.set('d1', {
+    id: 'd1', fileId: 'f1', pageNum: 1, rects: [[1, 2, 3, 4]],
+    rowId: 'r1', half: 'lat', raw: '41°N', span: [5, 9],
+  });
+  const state = {
+    files: [{ id: 'f1', name: 'a.pdf', path: null, doc: null, error: null, numPages: 1, intensity: null, hidden: false, pages: [{ num: 1, w: 1, h: 1, proxy: null, dets: ['d1'] }] }],
+    dets,
+    rows: [{ id: 'r1', cells: ['', ''], notes: '', lat: 41, lon: null, latRaw: null, lonRaw: null, src: { fileId: 'f1', pageNum: 1, latDet: 'd1', lonDet: null } }],
+    cols: ['Genus', 'Species'],
+    notesOn: false, fmt: 'dd', showAll: false, showHighlights: true,
+    zoom: 1.4, intensity: 1, currentFile: 'f1', suppressed: new Set(),
+  };
+  const packed = packState(state, 2);
+  assert.equal('manual' in packed.dets[0], false);
+});
+
+test('migration does not rescue an unusable snapshot', () => {
+  // A snapshot with no files array is garbage, not an empty session — the
+  // migration must not manufacture one and let it through.
+  assert.equal(unpackState({}), null);
+  assert.equal(unpackState({ v: 2 }), null);
+  assert.equal(unpackState({ v: 2, intensity: 5 }), null);
 });

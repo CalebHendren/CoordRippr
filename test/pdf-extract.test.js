@@ -16,6 +16,12 @@ const fixture = path.join(__dirname, 'fixtures', 'sample.pdf');
 
 let pages = []; // [{text, spans, pairs}]
 
+// The fixture was built to exercise the classic "Balanced" net, which includes
+// deliberately weak cases (a bare decimal pair) that the app's default —
+// Strictest since 0.6.0 — is meant to reject. Pin the level so this test keeps
+// measuring the pipeline rather than tracking whatever the default happens to be.
+const NET = 7; // Balanced (was level 5 on the old 7-step scale)
+
 before(async () => {
   const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
   const data = new Uint8Array(await fs.readFile(fixture));
@@ -24,8 +30,8 @@ before(async () => {
     const page = await doc.getPage(p);
     const tc = await page.getTextContent();
     const { text, spans } = buildPageText(tc);
-    const tokens = findTokens(text);
-    pages.push({ text, spans, tokens, pairs: pairTokens(tokens, text) });
+    const tokens = findTokens(text, NET);
+    pages.push({ text, spans, tokens, pairs: pairTokens(tokens, text, NET) });
   }
 });
 
@@ -75,7 +81,7 @@ test('detected matches map back to page rectangles', () => {
 });
 
 test('the page 1 → page 2 boundary yields no phantom cross-page pairs', () => {
-  const pairs = extractCrossPage(pages[0].text, pages[1].text);
+  const pairs = extractCrossPage(pages[0].text, pages[1].text, NET);
   assert.equal(pairs.length, 0,
     `phantom cross-page pairs: ${JSON.stringify(pairs.map((p) => [p.lat?.raw, p.lon?.raw]))}`);
 });

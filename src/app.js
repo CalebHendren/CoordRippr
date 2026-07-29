@@ -4,7 +4,7 @@
 import * as pdfjsLib from '../node_modules/pdfjs-dist/build/pdf.min.mjs';
 import {
   extractCoordinates, extractCrossPage, parseSingle, formatDD, formatDMS,
-  DEFAULT_INTENSITY, INTENSITY_LABELS,
+  DEFAULT_INTENSITY, INTENSITY_LABELS, MAX_INTENSITY,
 } from './coords.js';
 import { buildPageText, rectsForRange } from './pdftext.js';
 import {
@@ -12,10 +12,18 @@ import {
   buildPrompt, oneWord, chunkWork, chunkPerPage, runPool, runBatched,
   DEFAULT_CONCURRENCY, MAX_CONCURRENCY, DEFAULT_BATCH_DELAY, MAX_BATCH_DELAY_MS,
   DEFAULT_TEMPERATURE, MIN_TEMPERATURE, MAX_TEMPERATURE,
+  buildRenamePrompt, normalizeRename, safeFileName, uniqueFileName,
+  DEFAULT_RENAME_SPEC, RENAME_PAGE_COUNT, RENAME_CHAR_BUDGET,
 } from './llm.js';
 import { buildImagePdf } from './pdfout.js';
 import { RELEASES_API, RELEASES_PAGE, KOFI_URL, isNewer, isDue } from './updates.js';
-import { packState, unpackState, storage } from './persist.js';
+import {
+  packState, unpackState, storage, migrateIdbToFiles, getSetting, setSetting,
+} from './persist.js';
+import {
+  packProjectFile, unpackProjectFile, uniqueProjectName, projectFileName,
+  estimateExportSize, formatBytes, PROJECT_FILE_EXT,
+} from './projectio.js';
 import { findDuplicateRowIds } from './dedup.js';
 
 const api = window.coordrippr;
@@ -470,7 +478,7 @@ function buildFileNetControl(file) {
   const sel = document.createElement('select');
   sel.className = 'file-net-sel';
   const opts = [['', `Auto (${intensityName(state.intensity)})`]];
-  for (let l = 1; l <= 7; l++) opts.push([String(l), `${l} · ${intensityName(l)}`]);
+  for (let l = 1; l <= MAX_INTENSITY; l++) opts.push([String(l), `${l} · ${intensityName(l)}`]);
   sel.innerHTML = opts
     .map(([v, t]) => `<option value="${v}">${escapeHtml(t)}</option>`)
     .join('');
@@ -544,9 +552,11 @@ function renderPages() {
       for (const rect of det.rects) {
         const [x1, y1, x2, y2] = viewport.convertToViewportRectangle(rect);
         const hl = document.createElement('div');
-        hl.className = 'hl';
+        hl.className = det.manual ? 'hl manual' : 'hl';
         hl.dataset.det = det.id;
-        hl.title = `${det.raw}  (${det.half === 'lat' ? 'latitude' : 'longitude'})`;
+        hl.title = det.manual
+          ? `Marked by hand${det.raw ? `\n${det.raw}` : ''}`
+          : `${det.raw}  (${det.half === 'lat' ? 'latitude' : 'longitude'})`;
         hl.style.left = `${Math.min(x1, x2) - 2}px`;
         hl.style.top = `${Math.min(y1, y2) - 1}px`;
         hl.style.width = `${Math.abs(x2 - x1) + 4}px`;
@@ -594,6 +604,265 @@ async function renderPageCanvas(wrap, pageRec) {
   if (old) old.remove();
   wrap.insertBefore(canvas, wrap.firstChild);
 }
+
+// ---------------------------------------------------------------------------
+// Degree / minute / second palette
+//
+// ° ′ ″ are awkward to type on most keyboards, and typing coordinates by hand is
+// exactly what the CSV cells and the mark-coordinate dialog are for. The buttons
+// insert at the cursor of whatever field was last being typed in; with nothing
+// focused they fall back to the clipboard.
+// ---------------------------------------------------------------------------
+
+let lastTypedField = null;
+
+document.addEventListener('focusin', (e) => {
+  const el = e.target;
+  if (el instanceof HTMLInputElement && (el.type === 'text' || el.type === '')) lastTypedField = el;
+});
+
+function insertSymbol(sym) {
+  const el = lastTypedField;
+  // Still in the document and still usable? A re-render replaces the CSV inputs.
+  if (!el || !el.isConnected || el.disabled || el.readOnly) {
+    navigator.clipboard?.writeText(sym).then(
+      () => setStatus(`Copied “${sym}” to the clipboard — no field was focused.`),
+      () => setStatus(`Click into a cell first, then press ${sym}.`)
+    );
+    return;
+  }
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, start) + sym + el.value.slice(end);
+  const caret = start + sym.length;
+  el.setSelectionRange(caret, caret);
+  el.focus();
+  // The CSV cells listen for 'input' to track edits; a programmatic value
+  // assignment does not fire one on its own.
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+for (const bar of document.querySelectorAll('.symbol-bar')) {
+  // mousedown + preventDefault keeps focus (and the caret position) in the
+  // field the user was typing in — a plain click would blur it first.
+  bar.addEventListener('mousedown', (e) => {
+    const btn = e.target.closest('button.sym');
+    if (!btn) return;
+    e.preventDefault();
+    insertSymbol(btn.dataset.sym);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Marking a coordinate by hand
+//
+// Some coordinates cannot be recovered from the text at any net level — the
+// degrees were dropped by the typesetter, the glyphs came out as garbage, the
+// page is an image. Rather than leave a row floating with no provenance, the
+// user drags a box over the coordinate on the page and types the values: that
+// box becomes a highlight like any other, linked to its row in both directions,
+// exported into the highlighted PDF, and left untouched by re-scans.
+// ---------------------------------------------------------------------------
+
+let marking = false;       // marking mode armed from the toolbar
+let markDrag = null;       // {wrap, pageRec, startX, startY, box} while dragging
+let markPending = null;    // {file, pageRec, rect, text} awaiting the dialog
+
+function setMarking(on) {
+  marking = on;
+  $('#btn-mark').classList.toggle('on', on);
+  pagesEl.classList.toggle('marking', on);
+  if (on) setStatus('Marking: drag a box around a coordinate on the page. Click the button again to stop.');
+}
+
+$('#btn-mark').addEventListener('click', () => {
+  if (!marking && !state.files.some((f) => !f.hidden && !f.error)) {
+    return setStatus('Open a PDF first.');
+  }
+  setMarking(!marking);
+  if (!marking) refreshCounts();
+});
+
+pagesEl.addEventListener('mousedown', (e) => {
+  if (!marking || e.button !== 0) return;
+  const wrap = e.target.closest('.page-wrap');
+  if (!wrap) return;
+  const file = state.files.find((f) => f.id === state.currentFile);
+  const pageRec = file && file.pages.find((p) => p.num === Number(wrap.dataset.page));
+  if (!pageRec || !pageRec.proxy) return;
+  e.preventDefault();
+  const r = wrap.getBoundingClientRect();
+  const box = document.createElement('div');
+  box.id = 'mark-box';
+  wrap.appendChild(box);
+  markDrag = { wrap, file, pageRec, startX: e.clientX - r.left, startY: e.clientY - r.top, box };
+  drawMarkBox(e);
+});
+
+function drawMarkBox(e) {
+  if (!markDrag) return;
+  const r = markDrag.wrap.getBoundingClientRect();
+  const x = Math.min(Math.max(e.clientX - r.left, 0), r.width);
+  const y = Math.min(Math.max(e.clientY - r.top, 0), r.height);
+  const { startX, startY, box } = markDrag;
+  box.style.left = `${Math.min(startX, x)}px`;
+  box.style.top = `${Math.min(startY, y)}px`;
+  box.style.width = `${Math.abs(x - startX)}px`;
+  box.style.height = `${Math.abs(y - startY)}px`;
+  markDrag.cur = { x, y };
+}
+
+window.addEventListener('mousemove', (e) => { if (markDrag) drawMarkBox(e); });
+
+window.addEventListener('mouseup', async () => {
+  if (!markDrag) return;
+  const drag = markDrag;
+  markDrag = null;
+  drag.box.remove();
+  const cur = drag.cur;
+  // A click rather than a drag: nothing to mark.
+  if (!cur || Math.abs(cur.x - drag.startX) < 6 || Math.abs(cur.y - drag.startY) < 6) return;
+
+  // Viewport pixels -> PDF user space, which is what det.rects hold, so the
+  // highlight tracks the page at any zoom.
+  const viewport = drag.pageRec.proxy.getViewport({ scale: state.zoom });
+  const [x1, y1] = viewport.convertToPdfPoint(Math.min(drag.startX, cur.x), Math.min(drag.startY, cur.y));
+  const [x2, y2] = viewport.convertToPdfPoint(Math.max(drag.startX, cur.x), Math.max(drag.startY, cur.y));
+  const rect = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+
+  const text = await textInRect(drag.pageRec, rect);
+  markPending = { file: drag.file, pageRec: drag.pageRec, rect, text };
+  openMarkDialog(text);
+});
+
+/** The page text whose glyph boxes fall inside a PDF-space rectangle. */
+async function textInRect(pageRec, [rx1, ry1, rx2, ry2]) {
+  try {
+    const tc = await pageRec.proxy.getTextContent();
+    const { spans } = buildPageText(tc);
+    const parts = [];
+    for (const span of spans) {
+      const it = span.item;
+      const x = it.transform[4];
+      const y = it.transform[5];
+      const w = it.width || 0;
+      const h = it.height || 8;
+      // Any overlap counts: a box drawn tightly around a coordinate rarely
+      // encloses the full extent of the text item it sits in.
+      if (x + w < rx1 || x > rx2 || y + h < ry1 || y > ry2) continue;
+      parts.push(it.str);
+    }
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  } catch {
+    return '';
+  }
+}
+
+const markDialog = $('#mark-dialog');
+
+function openMarkDialog(text) {
+  $('#mark-text').textContent = text || '(no text layer under the box — type the values yourself)';
+  $('#mark-status').textContent = '';
+
+  // Pre-fill from whatever the box caught, at the widest net: the parser could
+  // not find this in context, but in isolation it often reads fine, and a wrong
+  // guess costs the user one correction.
+  let lat = '';
+  let lon = '';
+  if (text) {
+    const [pair] = extractCoordinates(text, MAX_INTENSITY);
+    if (pair) {
+      if (pair.lat) lat = formatDD(pair.lat.dd);
+      if (pair.lon) lon = formatDD(pair.lon.dd);
+    }
+  }
+  $('#mark-lat').value = lat;
+  $('#mark-lon').value = lon;
+
+  // "Attach to the selected row" only makes sense with exactly one selected.
+  const selectedId = state.selected.size === 1 ? [...state.selected][0] : null;
+  const rowIdx = selectedId ? visibleRows().findIndex((r) => r.id === selectedId) : -1;
+  const rowLabel = $('#mark-target-row-label');
+  rowLabel.classList.toggle('hidden', rowIdx < 0);
+  if (rowIdx >= 0) {
+    rowLabel.lastChild.textContent = ` The selected row (row ${rowIdx + 1})`;
+  }
+  markDialog.querySelector('input[name="mark-target"][value="new"]').checked = true;
+  markDialog.showModal();
+  $('#mark-lat').focus();
+}
+
+$('#mark-save').addEventListener('click', () => {
+  if (!markPending) return markDialog.close();
+  const latText = $('#mark-lat').value.trim();
+  const lonText = $('#mark-lon').value.trim();
+  const lat = latText ? parseSingle(latText, 'lat') : null;
+  const lon = lonText ? parseSingle(lonText, 'lon') : null;
+  if (latText && lat == null) return void ($('#mark-status').textContent = 'Latitude could not be read — try 17.0 or 17°00\'N.');
+  if (lonText && lon == null) return void ($('#mark-status').textContent = 'Longitude could not be read — try -104.767 or 104°46\'W.');
+  if (lat == null && lon == null) return void ($('#mark-status').textContent = 'Enter a latitude, a longitude, or both.');
+
+  const { file, pageRec, rect, text } = markPending;
+  const toSelected = markDialog.querySelector('input[name="mark-target"]:checked').value === 'row';
+  const targetId = toSelected && state.selected.size === 1 ? [...state.selected][0] : null;
+  let row = targetId ? state.rows.find((r) => r.id === targetId) : null;
+
+  if (row) {
+    // Only overwrite values the user actually supplied here.
+    if (lat != null) { row.lat = lat; row.latRaw = null; }
+    if (lon != null) { row.lon = lon; row.lonRaw = null; }
+  } else {
+    row = {
+      id: uid('r'), cells: emptyCells(), notes: '',
+      lat, lon, latRaw: null, lonRaw: null, src: null,
+    };
+    state.rows.push(row);
+  }
+
+  const det = {
+    id: uid('d'), fileId: file.id, pageNum: pageRec.num,
+    rects: [rect], rowId: row.id, half: 'lat',
+    raw: text ? text.slice(0, 200) : '',
+    // No text offset, so nothing to suppress on delete and nothing to re-find
+    // on re-scan; `manual` is what keeps rescanAll's hands off it.
+    span: null, manual: true,
+  };
+  state.dets.set(det.id, det);
+  pageRec.dets.push(det.id);
+  // Re-point the row at the box the user just drew — it is the better anchor —
+  // but carry any detections it already had along as extras rather than
+  // orphaning them: they are still drawn on the page, and a row has to keep
+  // referencing every highlight it owns or deleting it would leave them behind.
+  const prior = row.src || {};
+  const kept = [prior.latDet, prior.lonDet, ...(prior.extraDets || [])].filter(Boolean);
+  row.src = {
+    fileId: file.id, pageNum: pageRec.num,
+    latDet: det.id, lonDet: null, extraDets: kept, manual: true,
+  };
+
+  markPending = null;
+  markDialog.close();
+  renderAll();
+  setActiveRow(row.id, { scrollCsv: true });
+  state.selected = new Set([row.id]);
+  refreshRowClasses();
+  persistSoon();
+  setStatus(`Marked a coordinate on ${file.name} p.${pageRec.num}.`);
+});
+
+markDialog.addEventListener('close', () => { markPending = null; });
+
+// In a method="dialog" form the first submit button is what Enter activates,
+// and that is Cancel — losing the values the user just typed. Route Enter in a
+// text field to the primary action instead.
+function enterActivates(dialog, button) {
+  dialog.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox' || e.target.type === 'radio') return;
+    e.preventDefault();
+    button.click();
+  });
+}
+enterActivates(markDialog, $('#mark-save'));
 
 // ---------------------------------------------------------------------------
 // Selection & two-way jumping
@@ -736,6 +1005,12 @@ function renderTable() {
   const delFlaggedBtn = $('#btn-del-flagged');
   delFlaggedBtn.classList.toggle('hidden', flagged === 0);
   delFlaggedBtn.textContent = `🗑 Delete Flagged (${flagged})`;
+  // Deleting a detection suppresses it for good — through re-scans and every net
+  // level — which is indistinguishable from the parser simply never finding it.
+  // Surface the count so there is always a way back.
+  const restoreBtn = $('#btn-restore-sup');
+  restoreBtn.classList.toggle('hidden', state.suppressed.size === 0);
+  restoreBtn.textContent = `↩ Restore Deleted (${state.suppressed.size})`;
   renderFillCols();
   refreshRowClasses();
   positionFillHandle();
@@ -1250,6 +1525,7 @@ async function rescanAll(msg = null) {
   const detRows = new Set();
   for (const row of state.rows) {
     if (!row.src) continue;
+    if (row.src.manual) continue; // drawn by hand: the parser has no say over it
     if (!scannable.some((f) => f.id === row.src.fileId)) continue; // keep as-is
     detRows.add(row.id);
     for (const detId of [row.src.latDet, row.src.lonDet]) {
@@ -1265,8 +1541,20 @@ async function rescanAll(msg = null) {
   state.rows = [];
   for (const file of scannable) {
     for (const pageRec of file.pages) {
-      for (const detId of pageRec.dets) state.dets.delete(detId);
-      pageRec.dets = [];
+      // Hand-drawn highlights are not re-derivable from the text, so they stay
+      // on the page (and keep their rows) across every re-scan.
+      const manual = pageRec.dets.filter((id) => state.dets.get(id)?.manual);
+      for (const detId of pageRec.dets) {
+        if (!manual.includes(detId)) state.dets.delete(detId);
+      }
+      pageRec.dets = manual;
+    }
+  }
+  // A hand-marked row may also hold parser detections it inherited when the box
+  // was attached to it. Those have just been deleted, so drop the dangling ids.
+  for (const row of keptRows) {
+    if (row.src && row.src.extraDets) {
+      row.src.extraDets = row.src.extraDets.filter((id) => state.dets.has(id));
     }
   }
 
@@ -1293,14 +1581,31 @@ async function rescanAll(msg = null) {
 }
 
 $('#btn-add-row').addEventListener('click', () => {
-  state.rows.push({
+  const row = {
     id: uid('r'), cells: emptyCells(), notes: '', lat: null, lon: null,
     latRaw: null, lonRaw: null, src: null,
-  });
+  };
+  // Land directly below what the user is working on rather than at the very
+  // bottom — in a table of hundreds of rows, appending is almost never what was
+  // meant. The lowest selected row wins; with no selection, the active one; with
+  // neither, append as before.
+  let at = -1;
+  for (const id of state.selected) {
+    at = Math.max(at, state.rows.findIndex((r) => r.id === id));
+  }
+  if (at < 0 && state.activeRow) at = state.rows.findIndex((r) => r.id === state.activeRow);
+  if (at >= 0) state.rows.splice(at + 1, 0, row);
+  else state.rows.push(row);
+
+  state.selected = new Set([row.id]);
+  state.anchor = row.id;
+  state.activeRow = row.id;
   renderTable();
   refreshCounts();
   persistSoon();
-  tbodyEl.lastElementChild?.scrollIntoView({ block: 'nearest' });
+  const tr = tbodyEl.querySelector(`tr[data-row="${row.id}"]`);
+  tr?.scrollIntoView({ block: 'nearest' });
+  tr?.querySelector('input')?.focus();
 });
 
 $('#btn-add-col').addEventListener('click', () => {
@@ -1346,6 +1651,22 @@ $('#btn-del-flagged').addEventListener('click', () => {
   renderAll();
   persistSoon();
   setStatus(`Deleted ${flagged.length} LLM-flagged row${flagged.length === 1 ? '' : 's'}.`);
+});
+
+$('#btn-restore-sup').addEventListener('click', async () => {
+  const n = state.suppressed.size;
+  if (n === 0) return;
+  if (state.busy) return setStatus('Busy — wait for scanning to finish.');
+  const ok = confirm(
+    `Bring back ${n} deleted detection${n === 1 ? '' : 's'}?\n\n` +
+    `Rows you deleted stay deleted through re-scans and net changes. This forgets ` +
+    `all of those deletions in this project and re-scans, so anything the current ` +
+    `net finds comes back — including rows you meant to get rid of.`
+  );
+  if (!ok) return;
+  state.suppressed.clear();
+  await rescanAll(`Restoring ${n} deleted detection${n === 1 ? '' : 's'}…`);
+  setStatus(`Restored deleted detections — ${visibleRows().length} rows.`);
 });
 
 // ---------------------------------------------------------------------------
@@ -1487,11 +1808,15 @@ async function renderHighlightedPage(pageRec) {
       const [x1, y1, x2, y2] = viewport.convertToViewportRectangle(rect);
       const [x, y] = [Math.min(x1, x2) - 2, Math.min(y1, y2) - 1];
       const [w, h] = [Math.abs(x2 - x1) + 4, Math.abs(y2 - y1) + 2];
-      ctx.fillStyle = 'rgba(250, 204, 21, 0.42)';
+      // Same two colours the page view uses, so the exported PDF still says
+      // which coordinates the parser found and which the user marked by hand.
+      ctx.fillStyle = det.manual ? 'rgba(52, 211, 153, 0.38)' : 'rgba(250, 204, 21, 0.42)';
       ctx.fillRect(x, y, w, h);
-      ctx.strokeStyle = '#f59e0b';
+      ctx.strokeStyle = det.manual ? '#34d399' : '#f59e0b';
       ctx.lineWidth = 1.5;
+      ctx.setLineDash(det.manual ? [4, 3] : []);
       ctx.strokeRect(x, y, w, h);
+      ctx.setLineDash([]);
     }
   }
   const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.9));
@@ -1570,18 +1895,42 @@ const LLM_PREFS_KEY = 'coordrippr.llm.prefs';
 let llmRunning = false;
 let llmAbort = false;
 
-function llmPrefs() {
-  let p = {};
-  try { p = JSON.parse(localStorage.getItem(LLM_PREFS_KEY)) || {}; } catch { /* fresh */ }
-  p.keys = p.keys || {};
-  p.models = p.models || {};
-  p.urls = p.urls || {};
+// These live in the durable settings store rather than localStorage: a file://
+// renderer's localStorage goes the same way its IndexedDB does when the app is
+// reinstalled, and losing the API keys with it is a poor welcome to an update.
+// The store is async and the dialog code is not, so the prefs are cached in
+// memory; `initLlmPrefs()` fills the cache at startup (adopting any old
+// localStorage copy) and `saveLlmPrefs()` writes through.
+let llmPrefsCache = null;
+
+function normalizeLlmPrefs(p) {
+  const out = p && typeof p === 'object' ? { ...p } : {};
+  out.keys = out.keys || {};
+  out.models = out.models || {};
+  out.urls = out.urls || {};
   // Retry-model settings are kept in their own per-provider maps so a provider
   // can serve as both the primary and the retry with different models/keys.
-  p.retryModels = p.retryModels || {};
-  p.retryUrls = p.retryUrls || {};
-  p.retryKeys = p.retryKeys || {};
-  return p;
+  out.retryModels = out.retryModels || {};
+  out.retryUrls = out.retryUrls || {};
+  out.retryKeys = out.retryKeys || {};
+  return out;
+}
+
+function llmPrefs() {
+  if (!llmPrefsCache) llmPrefsCache = normalizeLlmPrefs(null);
+  return llmPrefsCache;
+}
+
+function saveLlmPrefs(prefs) {
+  llmPrefsCache = prefs;
+  setSetting('llmPrefs', prefs);
+}
+
+// Load the prefs, then build the dialog from them — initLlmDialog() registers
+// listeners, so it must run exactly once.
+async function initLlmPrefs() {
+  llmPrefsCache = normalizeLlmPrefs(await getSetting('llmPrefs', null, LLM_PREFS_KEY));
+  initLlmDialog();
 }
 
 function llmStatus(msg) {
@@ -1715,6 +2064,11 @@ function initLlmDialog() {
   $('#llm-temp-on').addEventListener('change', syncTempState);
   if (prefs.notes != null) $('#llm-notes').checked = prefs.notes;
   if (prefs.notesSpec) $('#llm-notes-spec').value = prefs.notesSpec;
+  if (prefs.rename != null) $('#llm-rename').checked = prefs.rename;
+  // Left empty, the prompt falls back to this same default — so the placeholder
+  // is the honest description of what an untouched field will do.
+  $('#llm-rename-spec').placeholder = DEFAULT_RENAME_SPEC;
+  if (prefs.renameSpec) $('#llm-rename-spec').value = prefs.renameSpec;
   // Retry model settings.
   if (prefs.retry != null) $('#llm-retry').checked = prefs.retry;
   if (prefs.retryProvider && PROVIDERS[prefs.retryProvider]) $('#llm-retry-provider').value = prefs.retryProvider;
@@ -1738,6 +2092,9 @@ function initLlmDialog() {
   }
   syncNotesState();
   $('#llm-notes').addEventListener('change', syncNotesState);
+  syncRenameState();
+  $('#llm-rename').addEventListener('change', syncRenameState);
+  $('#llm-rename-run').addEventListener('click', () => runRenameSuggestions());
   syncLlmProviderFields();
   sel.addEventListener('change', syncLlmProviderFields);
   $('#llm-model-select').addEventListener('change', (e) => onModelSelectChange(e.currentTarget, $('#llm-model')));
@@ -1774,6 +2131,10 @@ function syncDeleteOpts() {
 function syncPerPageState() {
   const wholePdf = document.querySelector('input[name="llm-scope"]:checked').value === 'all';
   $('#llm-perpage').disabled = wholePdf;
+}
+
+function syncRenameState() {
+  $('#llm-rename-spec').disabled = !$('#llm-rename').checked;
 }
 
 function syncNotesState() {
@@ -1901,6 +2262,8 @@ function collectLlmSettings() {
     autoDelete: $('#llm-flagdel').checked && $('#llm-autodel').checked && !$('#llm-confirmdel').checked,
     notes: $('#llm-notes').checked,
     notesSpec: $('#llm-notes-spec').value,
+    rename: $('#llm-rename').checked,
+    renameSpec: $('#llm-rename-spec').value,
   };
 
   // Second-model settings, shared by "retry unfinished rows" and "delete only
@@ -1947,7 +2310,9 @@ function collectLlmSettings() {
   prefs.retryModels[retryId] = s.retryModel;
   prefs.retryUrls[retryId] = s.retryUrl;
   if (retrySeparateKey) prefs.retryKeys[retryId] = $('#llm-retry-key').value.trim();
-  localStorage.setItem(LLM_PREFS_KEY, JSON.stringify(prefs));
+  prefs.rename = s.rename;
+  prefs.renameSpec = s.renameSpec;
+  saveLlmPrefs(prefs);
   return s;
 }
 
@@ -2082,6 +2447,231 @@ $('#btn-llm').addEventListener('click', () => {
   llmDialog.showModal();
 });
 
+// ---------------------------------------------------------------------------
+// Renaming PDFs from their contents
+//
+// Papers arrive named "168766.pdf". The model reads the opening pages and
+// proposes a name (by default the genus the paper is about), the user reviews
+// and edits every suggestion, and only then does anything touch the disk —
+// copies into a subfolder unless the user explicitly asks for a rename in place.
+// ---------------------------------------------------------------------------
+
+const renameDialog = $('#rename-dialog');
+let renameProposals = []; // [{file, oldName, newName, note}]
+
+/**
+ * Ask the model for a name for each ticked PDF, then open the review dialog.
+ * @returns {Promise<boolean>} false if the user pressed Stop, so a combined run
+ *   does not carry on into the row work they just cancelled.
+ */
+async function runRenameSuggestions() {
+  if (llmRunning) { llmStatus('A run is already in progress.'); return false; }
+  const s = collectLlmSettings();
+  if (!s.url) { llmStatus('Enter an endpoint URL.'); return false; }
+  if (!s.model) { llmStatus('Enter a model name.'); return false; }
+  if (!s.key && s.provider !== 'custom') { llmStatus('Enter your API key.'); return false; }
+
+  const files = state.files.filter((f) => s.files.has(f.id) && !f.error && f.doc);
+  if (files.length === 0) { llmStatus('Tick at least one loaded PDF under “PDFs to send”.'); return false; }
+
+  llmRunning = true;
+  llmAbort = false;
+  $('#llm-run').textContent = 'Stop';
+  const temp = s.tempOn ? s.temperature : undefined;
+  const cfg = { kind: s.kind, url: s.url, model: s.model, key: s.key, temperature: temp };
+  const errors = [];
+  let done = 0;
+
+  const worker = async (file) => {
+    const pages = [];
+    let chars = 0;
+    for (let n = 1; n <= Math.min(RENAME_PAGE_COUNT, file.numPages); n++) {
+      const text = await pageTextFor(file, n);
+      pages.push({ page: n, text: text.slice(0, RENAME_CHAR_BUDGET - chars) });
+      chars += text.length;
+      if (chars >= RENAME_CHAR_BUDGET) break;
+    }
+    const { system, user } = buildRenamePrompt({ fileName: file.name, pages, spec: s.renameSpec });
+    try {
+      const req = buildRequest({
+        kind: cfg.kind, url: cfg.url, model: cfg.model, apiKey: cfg.key,
+        system, user, temperature: cfg.temperature, browser: IS_WEB, maxTokens: 512,
+      });
+      const res = await api.netFetch(req);
+      if (res.error) throw new Error(res.error);
+      if (!res.ok) {
+        let detail = (res.text || '').slice(0, 200);
+        try { extractText(cfg.kind, res.text); } catch (e) { detail = e.message; }
+        throw new Error(`HTTP ${res.status}: ${detail}`);
+      }
+      const [first] = parseResultsJson(extractText(cfg.kind, res.text));
+      const result = normalizeRename(first);
+      if (result) return { file, oldName: file.name, newName: result.name, note: result.note };
+      errors.push(`${file.name}: the model proposed no usable name.`);
+    } catch (err) {
+      errors.push(`${file.name}: ${err && err.message ? err.message : err}`);
+    } finally {
+      done++;
+      llmStatus(`Naming PDFs — ${done}/${files.length}…`);
+    }
+    return null;
+  };
+
+  try {
+    llmStatus(`Naming PDFs — 0/${files.length}…`);
+    const results = s.batchDelay > 0
+      ? await runBatched(files, s.concurrency, s.batchDelay, worker, () => llmAbort)
+      : await runPool(files, s.concurrency, worker, () => llmAbort);
+    renameProposals = results.filter(Boolean);
+  } catch (err) {
+    errors.push(err && err.message ? err.message : String(err));
+    renameProposals = [];
+  }
+  const stopped = llmAbort;
+  llmRunning = false;
+  llmAbort = false;
+  $('#llm-run').textContent = 'Run';
+
+  const problems = errors.length ? `\n${errors.length} problem(s):\n${errors.slice(0, 5).join('\n')}` : '';
+  if (renameProposals.length === 0) {
+    llmStatus(`${stopped ? 'Stopped.' : 'No names were suggested.'}${problems}`);
+    setStatus(stopped ? 'LLM Assist: stopped.' : 'LLM Assist: no file names were suggested.');
+    return !stopped;
+  }
+  llmStatus(
+    `${stopped ? 'Stopped — ' : ''}suggested ${renameProposals.length} name(s); ` +
+    `review them in the window that opened.${problems}`
+  );
+  openRenameDialog();
+  return !stopped;
+}
+
+function openRenameDialog() {
+  // Give every proposal a distinct file name up front, so two papers on the
+  // same genus do not silently collide into one file.
+  const taken = new Set();
+  const list = $('#rename-list');
+  list.innerHTML = '';
+  renameProposals.forEach((p, i) => {
+    p.fileName = uniqueFileName(p.newName, taken);
+    const row = document.createElement('div');
+    row.className = 'rename-row';
+    row.dataset.idx = String(i);
+    row.innerHTML =
+      `<input type="checkbox" data-pick checked />` +
+      `<span class="old" title="${escapeHtml(p.oldName)}">${escapeHtml(p.oldName)}</span>` +
+      `<span class="arrow">→</span>` +
+      `<input type="text" data-name value="${escapeHtml(p.fileName)}" spellcheck="false" />` +
+      (p.note ? `<span class="note">${escapeHtml(p.note)}</span>` : '');
+    list.appendChild(row);
+  });
+  $('#rename-status').textContent =
+    IS_WEB
+      ? 'Browser build: Apply downloads renamed copies instead of touching files on disk.'
+      : `${renameProposals.length} PDF(s) ready. Nothing is written until you press Apply.`;
+  renameDialog.showModal();
+}
+
+enterActivates(renameDialog, $('#rename-apply'));
+
+$('#rename-apply').addEventListener('click', async () => {
+  const status = $('#rename-status');
+  const rows = [...$('#rename-list').querySelectorAll('.rename-row')];
+  const picked = [];
+  for (const row of rows) {
+    const idx = Number(row.dataset.idx);
+    const proposal = renameProposals[idx];
+    if (!proposal) continue;
+    if (!row.querySelector('[data-pick]').checked) { row.classList.add('skipped'); continue; }
+    // Re-sanitise: the name box is free text and the user has been editing it.
+    const typed = row.querySelector('[data-name]').value;
+    const clean = safeFileName(typed);
+    if (!clean) {
+      row.classList.add('failed');
+      status.textContent = `“${typed}” is not a usable file name.`;
+      return;
+    }
+    picked.push({ row, proposal, newName: `${clean}.pdf` });
+  }
+  if (picked.length === 0) { status.textContent = 'Nothing ticked.'; return; }
+
+  const inPlace = renameDialog.querySelector('input[name="rename-mode"]:checked').value === 'inplace';
+  const subfolder = safeFileName($('#rename-subfolder').value) || 'renamed';
+
+  if (inPlace) {
+    const ok = confirm(
+      `Rename ${picked.length} original PDF${picked.length === 1 ? '' : 's'} on disk?\n\n` +
+      `The files themselves are renamed — this cannot be undone from inside CoordRippr.`
+    );
+    if (!ok) { status.textContent = 'Cancelled.'; return; }
+  }
+
+  // Browser build: no filesystem, so hand the user downloads instead.
+  if (IS_WEB) {
+    let saved = 0;
+    for (const { row, proposal, newName } of picked) {
+      const stored = project ? await storage.loadPdf(project.id, proposal.file.id).catch(() => null) : null;
+      if (!stored || !stored.bytes) { row.classList.add('failed'); continue; }
+      await api.savePdf({ defaultName: newName, data: stored.bytes });
+      row.classList.add('done');
+      saved++;
+    }
+    status.textContent = `Downloaded ${saved} renamed cop${saved === 1 ? 'y' : 'ies'}.`;
+    setStatus(`Downloaded ${saved} renamed PDF cop${saved === 1 ? 'y' : 'ies'}.`);
+    return;
+  }
+
+  const items = picked
+    .filter(({ proposal }) => proposal.file.path)
+    .map(({ proposal, newName }) => ({ path: proposal.file.path, newName, fileId: proposal.file.id }));
+  const pathless = picked.length - items.length;
+  if (items.length === 0) {
+    status.textContent = 'These PDFs were dragged in rather than opened from disk, so there is no file to rename.';
+    return;
+  }
+
+  status.textContent = 'Applying…';
+  let results;
+  try {
+    results = await api.renamePdfs({ items, inPlace, subfolder });
+  } catch (err) {
+    status.textContent = `Failed: ${err && err.message ? err.message : err}`;
+    return;
+  }
+
+  const byPath = new Map(results.map((r) => [r.path, r]));
+  let ok = 0;
+  const failures = [];
+  for (const { row, proposal, newName } of picked) {
+    const res = proposal.file.path ? byPath.get(proposal.file.path) : null;
+    if (res && res.ok) {
+      row.classList.add('done');
+      ok++;
+      // An in-place rename moved the file the session is pointing at, so the
+      // state has to follow it or the next restore cannot find the PDF.
+      if (inPlace && res.to) {
+        proposal.file.name = newName;
+        proposal.file.path = res.to;
+      }
+    } else {
+      row.classList.add('failed');
+      failures.push(`${proposal.oldName}: ${(res && res.error) || 'not renamed'}`);
+    }
+  }
+
+  if (inPlace && ok) {
+    renderFileList();
+    renderTable();
+    await persistNow();
+  }
+  const where = inPlace ? 'renamed in place' : `copied into “${subfolder}”`;
+  const extra = pathless ? ` ${pathless} dragged-in PDF(s) skipped.` : '';
+  status.textContent = failures.length
+    ? `${ok} ${where}; ${failures.length} failed:\n${failures.slice(0, 5).join('\n')}${extra}`
+    : `${ok} PDF${ok === 1 ? '' : 's'} ${where}.${extra}`;
+  setStatus(`${ok} PDF${ok === 1 ? '' : 's'} ${where}.`);
+});
+
 $('#llm-run').addEventListener('click', async () => {
   if (llmRunning) {
     llmAbort = true;
@@ -2092,7 +2682,17 @@ $('#llm-run').addEventListener('click', async () => {
   if (!s.url) return llmStatus('Enter an endpoint URL.');
   if (!s.model) return llmStatus('Enter a model name.');
   if (!s.key && s.provider !== 'custom') return llmStatus('Enter your API key.');
-  if (!s.verify && !s.fill && !s.genus && !s.species && !s.flagDelete && !s.notes) return llmStatus('Pick at least one task.');
+  if (!s.verify && !s.fill && !s.genus && !s.species && !s.flagDelete && !s.notes && !s.rename) {
+    return llmStatus('Pick at least one task.');
+  }
+  // Renaming is independent of the row work: with nothing else ticked, this is
+  // the whole run; otherwise it happens first, so the file names in the status
+  // line and the CSV's source column are the ones you end up with.
+  if (s.rename) {
+    const carryOn = await runRenameSuggestions();
+    const rowWork = s.verify || s.fill || s.genus || s.species || s.flagDelete || s.notes;
+    if (!carryOn || !rowWork) return;
+  }
   if (s.useSecondModel) {
     const why = s.retry && s.confirmDelete ? 'second model' : s.retry ? 'retry model' : 'delete-confirmation model';
     if (!s.retryUrl) return llmStatus(`Enter the ${why}’s endpoint URL (or turn its option off).`);
@@ -2720,6 +3320,172 @@ async function switchProject(id) {
   setStatus(`Switched to “${project.name}” — ${state.rows.length} row${state.rows.length === 1 ? '' : 's'}.`);
 }
 
+// ---------------------------------------------------------------------------
+// Colour schemes
+// ---------------------------------------------------------------------------
+
+// Ids match the :root[data-theme="…"] blocks in styles.css.
+const THEMES = [
+  ['default', 'Midnight'],
+  ['amethyst', 'Amethyst'],
+  ['dracula', 'Dracula'],
+  ['nord', 'Nord'],
+];
+
+function applyTheme(id) {
+  const known = THEMES.some(([key]) => key === id) ? id : 'default';
+  document.documentElement.dataset.theme = known;
+  $('#theme-select').value = known;
+}
+
+async function initTheme() {
+  const sel = $('#theme-select');
+  sel.innerHTML = THEMES.map(([id, label]) => `<option value="${id}">${escapeHtml(label)}</option>`).join('');
+  applyTheme(await getSetting('theme', 'default'));
+  sel.addEventListener('change', () => {
+    applyTheme(sel.value);
+    setSetting('theme', sel.value);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Export / import a project as a file
+//
+// The durable answer to "where did my work go?": a single .crproj holding the
+// whole project, optionally with copies of the PDFs, that can be backed up,
+// carried to another machine, or restored after any kind of reinstall.
+// ---------------------------------------------------------------------------
+
+const exportDialog = $('#export-dialog');
+
+/** Every stored PDF for a project, as [{fileId, name, bytes}]. */
+async function collectProjectPdfs(projectId, files) {
+  const out = [];
+  for (const f of files) {
+    let bytes = null;
+    const stored = await storage.loadPdf(projectId, f.id).catch(() => null);
+    if (stored && stored.bytes) bytes = stored.bytes;
+    // Drag-and-dropped PDFs are in storage; ones opened from disk usually are
+    // not, so re-read them from their path to make the export self-contained.
+    else if (f.path) bytes = await api.readFile(f.path).catch(() => null);
+    if (bytes) out.push({ fileId: f.id, name: f.name, bytes });
+  }
+  return out;
+}
+
+async function syncExportEstimate() {
+  const withPdfs = $('#export-pdfs').checked;
+  const status = $('#export-status');
+  if (!withPdfs) {
+    status.textContent = 'Rows and settings only — small, but it needs the PDFs to still be where they are now.';
+    return;
+  }
+  const n = state.files.length;
+  status.textContent = `Bundling ${n} PDF${n === 1 ? '' : 's'} — the file may be large.`;
+}
+
+$('#export-pdfs').addEventListener('change', syncExportEstimate);
+
+$('#btn-proj-export').addEventListener('click', () => {
+  if (!project) return setStatus('Persistence is unavailable — there is no project to export.');
+  if (state.busy) return setStatus('Busy — wait for scanning to finish.');
+  syncExportEstimate();
+  exportDialog.showModal();
+});
+
+$('#export-run').addEventListener('click', async () => {
+  if (!project) return;
+  const withPdfs = $('#export-pdfs').checked;
+  const status = $('#export-status');
+  try {
+    status.textContent = 'Building the export…';
+    await persistNow(); // make sure the snapshot on disk is the one we ship
+    const snapshot = packState(state, nextId);
+    const pdfs = withPdfs ? await collectProjectPdfs(project.id, state.files) : [];
+    const pdfBytes = pdfs.reduce((a, f) => a + (f.bytes.byteLength || 0), 0);
+    const estimate = estimateExportSize(JSON.stringify(snapshot).length, pdfBytes);
+    if (estimate > 400 * 1024 * 1024) {
+      const go = confirm(
+        `This export will be around ${formatBytes(estimate)}. Building it may take a while and use ` +
+        `a lot of memory.\n\nContinue? (Untick "Include copies of the PDFs" for a small file.)`
+      );
+      if (!go) { status.textContent = 'Cancelled.'; return; }
+    }
+    status.textContent = `Writing ${formatBytes(estimate)}…`;
+    const content = JSON.stringify(packProjectFile({ project, snapshot, pdfs }));
+    const saved = await api.saveJson({
+      defaultName: projectFileName(project.name),
+      content,
+      extension: PROJECT_FILE_EXT,
+    });
+    if (!saved) { status.textContent = 'Cancelled.'; return; }
+    exportDialog.close();
+    setStatus(`Exported “${project.name}” (${formatBytes(content.length)})${withPdfs ? ' with its PDFs' : ''}.`);
+  } catch (err) {
+    status.textContent = `Export failed: ${err && err.message ? err.message : err}`;
+  }
+});
+
+$('#btn-proj-import').addEventListener('click', async () => {
+  if (!project) return setStatus('Persistence is unavailable — projects cannot be imported.');
+  if (state.busy) return setStatus('Busy — wait for scanning to finish.');
+  let picked = null;
+  try {
+    picked = await api.openJson({ extension: PROJECT_FILE_EXT });
+  } catch (err) {
+    return setStatus(`Could not open that file: ${err && err.message ? err.message : err}`);
+  }
+  if (!picked) return;
+  try {
+    setStatus('Importing project…', true);
+    const bundle = unpackProjectFile(picked.content);
+    await persistNow();
+    // Always a NEW project: importing never merges into or overwrites one.
+    const p = makeProject(uniqueProjectName(bundle.name, projects));
+    await storage.saveSnapshot(p.id, bundle.snapshot);
+    for (const f of bundle.pdfs) {
+      await storage.savePdf(p.id, f.fileId, f.name, f.bytes);
+    }
+    projects.push(p);
+    project = p;
+    await storage.saveProjects(projects);
+    await storage.setActiveProject(p.id);
+    renderProjectSelect();
+    await restoreProject(p.id);
+    setStatus(
+      `Imported “${p.name}” — ${state.files.length} PDF${state.files.length === 1 ? '' : 's'} · ` +
+      `${visibleRows().length} row${visibleRows().length === 1 ? '' : 's'}` +
+      `${bundle.pdfs.length ? '' : ' (no PDF copies in the file — pages show only where the original paths still resolve)'}.`
+    );
+  } catch (err) {
+    state.busy = false;
+    setStatus(`Import failed: ${err && err.message ? err.message : err}`);
+  }
+});
+
+// Where projects are kept (Electron only — the browser build uses IndexedDB).
+async function initDataDir() {
+  const btn = $('#btn-data-dir');
+  if (!api.store) return;
+  btn.classList.remove('hidden');
+  const showDir = async () => {
+    try { btn.title = `Projects are stored in:\n${await api.store.dir()}\n\nClick to move them somewhere else.`; }
+    catch { /* leave the default tooltip */ }
+  };
+  showDir();
+  btn.addEventListener('click', async () => {
+    if (state.busy) return setStatus('Busy — wait for scanning to finish.');
+    try {
+      const moved = await api.store.setDir();
+      if (!moved) return;
+      await showDir();
+      setStatus(`Projects are now stored in ${moved}. The previous folder was left in place.`);
+    } catch (err) {
+      setStatus(`Could not move the data folder: ${err && err.message ? err.message : err}`);
+    }
+  });
+}
+
 // Small name-input dialog (Electron has no window.prompt).
 function askName(title, initial = '') {
   return new Promise((resolve) => {
@@ -2796,7 +3562,15 @@ $('#btn-proj-del').addEventListener('click', async () => {
 
 async function initProjects() {
   try {
+    // Electron: lift anything still in IndexedDB into the file store, once.
+    // Sessions used to disappear on update because a file:// renderer's
+    // IndexedDB lives inside the Chromium profile; files in the data folder do
+    // not have that problem. Nothing is deleted from IndexedDB either way.
+    const carried = await migrateIdbToFiles().catch(() => 0);
     projects = await storage.listProjects();
+    if (carried) {
+      console.info(`CoordRippr: moved ${carried} project(s) into the data folder`);
+    }
     if (projects.length === 0) {
       project = makeProject('Project 1');
       projects = [project];
@@ -2886,7 +3660,9 @@ async function initVersionAndUpdates() {
 // Init
 // ---------------------------------------------------------------------------
 
-initLlmDialog();
+initLlmPrefs();
+initTheme();
+initDataDir();
 initVersionAndUpdates();
 renderTable();
 syncControls();

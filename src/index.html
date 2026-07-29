@@ -15,6 +15,8 @@
       <button id="btn-proj-new" title="Create a new project">＋</button>
       <button id="btn-proj-rename" title="Rename this project">✎</button>
       <button id="btn-proj-del" title="Delete this project and its saved session">🗑</button>
+      <button id="btn-proj-export" title="Save this project to a file — a backup you can keep, move to another machine, or restore after reinstalling">📤</button>
+      <button id="btn-proj-import" title="Load a project from a .crproj file into a new project">📥</button>
     </div>
     <div class="tb-group">
       <button id="btn-open-folder" title="Scan every PDF in a folder (recursive)">Open Folder…</button>
@@ -26,10 +28,10 @@
       <label><input type="radio" name="fmt" value="dms" /> DMS</label>
       <label><input type="radio" name="fmt" value="both" /> Both (DD 3/4, DMS 5/6)</label>
     </div>
-    <div class="tb-group" id="intensity-group" title="How aggressively the regex net hunts for coordinates — 1 strictest … 7 everything. Re-scans loaded PDFs on change">
+    <div class="tb-group" id="intensity-group" title="How aggressively the regex net hunts for coordinates — 1 strictest … 12 everything. Re-scans loaded PDFs on change">
       <span class="tb-label">Net:</span>
-      <input type="range" id="intensity" min="1" max="7" step="1" value="5" />
-      <span id="intensity-name" class="muted">Balanced</span>
+      <input type="range" id="intensity" min="1" max="12" step="1" value="1" />
+      <span id="intensity-name" class="muted">Strictest</span>
     </div>
     <div class="tb-group">
       <label title="Show pages without any detected coordinates too">
@@ -38,6 +40,7 @@
       <label title="Toggle the yellow detection highlights — turn off to read the text underneath">
         <input type="checkbox" id="chk-highlights" checked /> Highlights
       </label>
+      <button id="btn-mark" title="Mark a coordinate by hand: drag a box over it on the page, then type the values. For coordinates the parser cannot read.">✥ Mark coord</button>
     </div>
     <div class="tb-group">
       <button id="btn-zoom-out" title="Zoom out">−</button>
@@ -56,12 +59,13 @@
     <section id="left">
       <div id="csv-tools">
         <div class="tool-row">
-          <button id="btn-add-row" title="Append an empty row">+ Row</button>
+          <button id="btn-add-row" title="Insert an empty row below the selected row (at the end when nothing is selected)">+ Row</button>
           <button id="btn-add-col" title="Add another data column (2 by default)">+ Col</button>
           <button id="btn-del-col" title="Remove the last data column">− Col</button>
           <button id="btn-del-rows" title="Delete the selected rows">Delete Selected</button>
           <button id="btn-dedup" title="Remove rows that share the same coordinates (with options)">Remove Duplicates…</button>
           <button id="btn-del-flagged" class="hidden danger" title="Delete every row the LLM flagged as a false positive">🗑 Delete Flagged</button>
+          <button id="btn-restore-sup" class="hidden" title="Deleted detections stay deleted through re-scans and net changes. Bring them all back.">↩ Restore Deleted</button>
           <span id="sel-info" class="muted"></span>
         </div>
         <div class="tool-row" id="fill-tools" title="Mass-enter a value into a data column">
@@ -75,6 +79,15 @@
           <input id="fill-value" type="text" placeholder="value" />
           <button id="btn-fill-range">Apply</button>
           <button id="btn-fill-selected" title="Fill the selected rows instead of a range">Apply to Selected</button>
+        </div>
+        <div class="tool-row symbol-bar" id="symbol-bar" title="Click to insert into the cell or field you were typing in — no focus is lost. With nothing focused, the symbol is copied to the clipboard.">
+          <span class="tb-label">Symbols</span>
+          <button type="button" class="sym" data-sym="°" title="Degree sign (U+00B0)">°</button>
+          <button type="button" class="sym" data-sym="′" title="Prime — minutes (U+2032)">′</button>
+          <button type="button" class="sym" data-sym="″" title="Double prime — seconds (U+2033)">″</button>
+          <button type="button" class="sym" data-sym="'" title="Apostrophe — minutes, the form CoordRippr writes">'</button>
+          <button type="button" class="sym" data-sym="&quot;" title="Quote — seconds, the form CoordRippr writes">"</button>
+          <span id="symbol-hint" class="muted"></span>
         </div>
       </div>
       <div id="csv-scroll">
@@ -110,7 +123,12 @@
     <div id="status">Ready.</div>
     <div id="footer-right">
       <span id="update-chip" class="hidden" role="button" title="Open the releases page"></span>
+      <label id="theme-picker" title="Colour scheme for the app window">
+        <span aria-hidden="true">🎨</span>
+        <select id="theme-select"></select>
+      </label>
       <span id="app-version" class="muted"></span>
+      <button id="btn-data-dir" class="linkish hidden" title="Where projects are stored. Move it to a synced folder to keep your work across machines and reinstalls.">Data folder…</button>
       <button id="btn-check-updates" class="linkish" title="Check GitHub for a newer release">Check for updates</button>
       <button id="btn-kofi" class="linkish" title="Support CoordRippr development on Ko-fi">☕ Ko-fi</button>
     </div>
@@ -186,6 +204,20 @@
           </label>
         </fieldset>
 
+        <fieldset class="wide" id="llm-rename-fs">
+          <legend>Rename PDFs</legend>
+          <label title="Sends the first few pages of each ticked PDF and asks for a file name. You review and edit every suggestion before anything on disk changes."><input type="checkbox" id="llm-rename" /> Suggest a file name for each selected PDF</label>
+          <label class="rename-spec">what the name should be
+            <input id="llm-rename-spec" type="text" disabled placeholder="the genus discussed in the paper" />
+          </label>
+          <p class="rename-hint muted">
+            Turns <code>168766.pdf</code> into <code>Xenopygus.pdf</code>. Runs with the main task when
+            ticked, or on its own with the button below. Copies go into a subfolder by default, so the
+            originals stay where they are.
+          </p>
+          <button type="button" id="llm-rename-run" class="linkish">Suggest names now…</button>
+        </fieldset>
+
         <fieldset class="wide" id="llm-retry-fs">
           <legend>Second model</legend>
           <label class="retry-toggle" title="After the first model finishes, rows it could not verify/badge — or whose Genus/Species (or other filled columns) are still empty — are automatically re-sent to a second model."><input type="checkbox" id="llm-retry" /> Retry unfinished rows with a second model</label>
@@ -244,6 +276,86 @@
       </div>
       <menu>
         <button value="ok" type="submit" class="primary">Done</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="mark-dialog">
+    <form method="dialog">
+      <h2>✥ Mark a coordinate</h2>
+      <p class="muted mark-intro">
+        The box you drew is remembered as a highlight on this page and linked to the row below, so
+        clicking either one jumps to the other. Re-scans and net changes leave it alone.
+      </p>
+      <div class="mark-found">
+        <span class="tb-label">Text under the box</span>
+        <pre id="mark-text" class="mark-text"></pre>
+      </div>
+      <div class="mark-grid">
+        <label>Latitude
+          <input id="mark-lat" type="text" spellcheck="false" placeholder="17°00'N or 17.0" />
+        </label>
+        <label>Longitude
+          <input id="mark-lon" type="text" spellcheck="false" placeholder="104°46'W or -104.767" />
+        </label>
+      </div>
+      <div class="symbol-bar" title="Click to insert at the cursor in the field you were typing in">
+        <span class="tb-label">Symbols</span>
+        <button type="button" class="sym" data-sym="°" title="Degree sign (U+00B0)">°</button>
+        <button type="button" class="sym" data-sym="′" title="Prime — minutes (U+2032)">′</button>
+        <button type="button" class="sym" data-sym="″" title="Double prime — seconds (U+2033)">″</button>
+        <button type="button" class="sym" data-sym="'" title="Apostrophe — minutes, the form CoordRippr writes">'</button>
+        <button type="button" class="sym" data-sym="&quot;" title="Quote — seconds, the form CoordRippr writes">"</button>
+      </div>
+      <fieldset class="mark-target" id="mark-target-fs">
+        <legend>Attach to</legend>
+        <label><input type="radio" name="mark-target" value="new" checked /> A new row</label>
+        <label id="mark-target-row-label"><input type="radio" name="mark-target" value="row" /> The selected row</label>
+      </fieldset>
+      <div id="mark-status" class="muted"></div>
+      <menu>
+        <button value="cancel" type="submit">Cancel</button>
+        <button type="button" id="mark-save" class="primary">Add coordinate</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="export-dialog">
+    <form method="dialog">
+      <h2>📤 Export project</h2>
+      <p class="muted">
+        Writes this project — its rows, edits, column headers, per-PDF settings and highlights — to a
+        single <code>.crproj</code> file. Import it later, on this machine or another one.
+      </p>
+      <fieldset class="dedup-opts">
+        <label title="Embeds a copy of every loaded PDF. The file is bigger but completely self-contained — it works on a machine that has never seen these PDFs.">
+          <input type="checkbox" id="export-pdfs" checked /> Include copies of the PDFs <span class="muted">(portable)</span>
+        </label>
+      </fieldset>
+      <div id="export-status" class="muted"></div>
+      <menu>
+        <button value="cancel" type="submit">Cancel</button>
+        <button type="button" id="export-run" class="primary">Export…</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="rename-dialog">
+    <form method="dialog">
+      <h2>Rename PDFs</h2>
+      <p class="muted">
+        Suggestions from the model. Edit any name, untick anything you want left alone, then apply.
+        <strong>Nothing on disk changes until you press Apply.</strong>
+      </p>
+      <fieldset class="dedup-opts">
+        <label><input type="radio" name="rename-mode" value="copy" checked /> Copy into a subfolder, keep the originals: <input id="rename-subfolder" type="text" value="renamed" /></label>
+        <label class="danger-opt"><input type="radio" name="rename-mode" value="inplace" /> Rename the original files in place <strong>(cannot be undone)</strong></label>
+      </fieldset>
+      <div id="rename-list" class="rename-list"></div>
+      <div id="rename-status" class="muted"></div>
+      <menu>
+        <button value="cancel" type="submit">Cancel</button>
+        <button type="button" id="rename-apply" class="primary">Apply</button>
       </menu>
     </form>
   </dialog>
