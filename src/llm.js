@@ -268,10 +268,119 @@ export function normalizeResult(r, colCount = 2) {
   return out.row ? out : null;
 }
 
+// ---------------------------------------------------------------------------
+// Text anchors: tie each row to the exact span it was detected in
+//
+// A page can hold a dozen coordinates that look alike, and until now the model
+// had to work out for itself which one produced which row. Every detection
+// already knows the character range it matched at — the same range that draws
+// the highlight on the page — so we mark that range in the text we send and
+// repeat it under the row. The model is then told where to look instead of
+// guessing.
+// ---------------------------------------------------------------------------
+
+const markOpen = (id, label) => `[[${id}.${label}]]`;
+const MARK_CLOSE = '[[/]]';
+
+// One key for both halves of the splice — planAnchors stores the marked text
+// under it and buildPrompt looks it up. Shared so the two cannot drift apart.
+const pageKey = (file, page) => `${file} p${page}`;
+
+// Length-preserving on purpose: the anchor offsets are indices into this exact
+// string, so a substitution must never move a character. Neutralising every
+// bracket rather than only doubled ones also covers the adjacency case, where a
+// lone "[" in the document ends up against a marker we insert and reads as
+// "[[". Afterwards the only [[ ]] in the message are the ones we put there.
+const neutralizeMarkers = (text) => text.replace(/\[/g, '⟦').replace(/\]/g, '⟧');
+
+/**
+ * Wrap every anchor belonging to this request in markers, and report what
+ * happened to each one so the row lines and the document text can never
+ * disagree: an anchor is shown as [[id.label]] only when that marker really is
+ * in the text below.
+ *
+ * Pages are keyed by name and number, exactly as the "--- file — page n ---"
+ * headers are; chunks are built per file, so two loaded PDFs sharing a name
+ * cannot collide inside one request.
+ *
+ * @param {Array} rows   [{id, anchors: [{label, file, page, start, end}]}]
+ * @param {Array} pages  [{file, page, text, truncatedAt?}]
+ * @returns {{texts: Map<string,string>, status: Map<string,object>, any: boolean}}
+ */
+function planAnchors(rows, pages) {
+  const info = new Map();
+  for (const p of pages) {
+    // A chunker that trimmed this page recorded how much of the original text
+    // survived. That matters: the trimmed text has a truncation notice appended,
+    // so its length is *longer* than the cut and offsets past the cut would
+    // otherwise look placeable. The notice is kept out of the neutralised body
+    // so its own brackets stay readable — it can never form "[[".
+    const limit = Number.isFinite(p.truncatedAt)
+      ? Math.max(0, Math.min(p.truncatedAt, p.text.length))
+      : p.text.length;
+    info.set(pageKey(p.file, p.page), {
+      limit,
+      body: neutralizeMarkers(p.text.slice(0, limit)),
+      tail: p.text.slice(limit),
+      cands: [],
+    });
+  }
+
+  const status = new Map();
+  let any = false;
+  for (const r of rows) {
+    for (const a of r.anchors || []) {
+      any = true;
+      const id = `${r.id}.${a.label}`;
+      const pi = info.get(pageKey(a.file, a.page));
+      if (!pi) {
+        status.set(id, { placed: false, why: 'that page is not included in this request' });
+        continue;
+      }
+      if (!(a.start >= 0 && a.end > a.start && a.end <= pi.limit)) {
+        status.set(id, { placed: false, why: 'it falls outside the page text included here' });
+        continue;
+      }
+      pi.cands.push({ id, start: a.start, end: a.end, rowId: r.id, label: a.label });
+    }
+  }
+
+  const texts = new Map();
+  for (const [k, pi] of info) {
+    // Earliest span wins, ties to the longer one; anything still overlapping it
+    // (an exact duplicate included) is left unmarked rather than nested.
+    pi.cands.sort((a, b) => a.start - b.start || b.end - a.end);
+    const keep = [];
+    let last = -1;
+    for (const c of pi.cands) {
+      if (c.start < last) {
+        status.set(c.id, { placed: false, why: "it overlaps another row's anchor" });
+        continue;
+      }
+      keep.push(c);
+      last = c.end;
+    }
+    // Read the matched text before splicing, then splice from the END so every
+    // earlier offset is still valid when its turn comes. The quoted text always
+    // comes from this slice rather than the detection's own `raw`: the two
+    // segments of a token split across a page break share one `raw` but have
+    // separate spans, and `raw` is trimmed while the span is not.
+    for (const c of keep) status.set(c.id, { placed: true, raw: pi.body.slice(c.start, c.end) });
+    let body = pi.body;
+    for (let i = keep.length - 1; i >= 0; i--) {
+      const c = keep[i];
+      body = body.slice(0, c.start) + markOpen(c.rowId, c.label) +
+        body.slice(c.start, c.end) + MARK_CLOSE + body.slice(c.end);
+    }
+    texts.set(k, body + pi.tail);
+  }
+  return { texts, status, any };
+}
+
 /**
  * @param {object} p
- * @param {Array} p.rows    [{id, num, cells, lat, lon, file, page}]
- * @param {Array} p.pages   [{file, page, text}]
+ * @param {Array} p.rows    [{id, num, cells, lat, lon, file, page, anchors?}]
+ * @param {Array} p.pages   [{file, page, text, truncatedAt?}]
  * @param {Array<string>} p.cols  data column header names (col1…colN)
  * @param {string} p.extra  user's additional instructions
  * @param {boolean} p.verify
@@ -283,22 +392,36 @@ export function normalizeResult(r, colCount = 2) {
  * @param {string}  p.notesSpec  what the user wants the notes to contain
  * @param {boolean} p.allowPrev  model may request the preceding page via "need_prev"
  * @param {boolean} p.allowNext  model may request the following page via "need_next"
+ * @param {boolean} p.anchor     mark each row's detected span in the page text
  */
-export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, species, flagDelete, notes, notesSpec, allowPrev, allowNext }) {
+export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, species, flagDelete, notes, notesSpec, allowPrev, allowNext, anchor }) {
   const colKeys = cols.map((_, i) => `"col${i + 1}"`);
+  // Only rows that actually carry an anchor change the prompt: with the feature
+  // off — or on but with nothing anchorable in this request — every string below
+  // is what it was before the feature existed.
+  const plan = anchor ? planAnchors(rows, pages) : null;
+  const anchored = !!(plan && plan.any);
+  const near = anchored ? `around that row's anchored span` : `near that row's coordinates`;
   const tasks = [];
   if (verify) {
-    tasks.push(
-      `- VERIFY each row's latitude/longitude against the document text. ` +
-        `"ok" = the coordinates appear in the text (allow formatting/rounding differences and DMS-vs-decimal conversion). ` +
-        `"mismatch" = the text clearly indicates different values: put the corrected decimal-degree values in "lat"/"lon". ` +
-        `"not_found" = you cannot find support for the coordinates in the text.`
+    tasks.push(anchored
+      ? `- VERIFY each row's latitude/longitude against ITS OWN ANCHORED SPAN, not against the page at large. ` +
+          `"ok" = the anchored text really is a coordinate matching the row's values (allow formatting/rounding ` +
+          `differences and DMS-vs-decimal conversion). ` +
+          `"mismatch" = the anchored text indicates different values, or the row misread it: put the corrected ` +
+          `decimal-degree values in "lat"/"lon". ` +
+          `"not_found" = ONLY for a row with no anchor here, whose coordinates the text does not support — never ` +
+          `for an anchored row, because the anchor already tells you where to look.`
+      : `- VERIFY each row's latitude/longitude against the document text. ` +
+          `"ok" = the coordinates appear in the text (allow formatting/rounding differences and DMS-vs-decimal conversion). ` +
+          `"mismatch" = the text clearly indicates different values: put the corrected decimal-degree values in "lat"/"lon". ` +
+          `"not_found" = you cannot find support for the coordinates in the text.`
     );
   }
   if (genus) {
     tasks.push(
       `- EXTRACT GENUS into "col1" (the ${cols[0] || 'Genus'} column): the genus of the organism described in the document ` +
-        `text near that row's coordinates. The genus is ALWAYS a single word — one capitalised Latin word (e.g. "Panthera"). ` +
+        `text ${near}. The genus is ALWAYS a single word — one capitalised Latin word (e.g. "Panthera"). ` +
         `Return at most one word; never a full binomial, author name or note. If a name is abbreviated (e.g. "P. leo"), ` +
         `expand the genus from where the full name appears elsewhere in the text. Use "" when the text gives no genus.`
     );
@@ -306,7 +429,7 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, spe
   if (species) {
     tasks.push(
       `- EXTRACT SPECIES into "col2" (the ${cols[1] || 'Species'} column): the specific epithet of the organism described in ` +
-        `the document text near that row's coordinates. The species is ALWAYS a single word — one lower-case Latin word ` +
+        `the document text ${near}. The species is ALWAYS a single word — one lower-case Latin word ` +
         `(e.g. "leo"). Return at most one word; never the genus, author name, subspecies or note. Use "" when the text gives no species.`
     );
   }
@@ -321,7 +444,7 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, spe
       const fillKeys = fillCols.map((c) => `"col${c.i + 1}"`);
       const naming = fillCols.map((c) => `column ${c.i + 1} is named "${c.name}"`).join(', ');
       tasks.push(
-        `- FILL ${fillKeys.join(', ')} for each row using information in the document text near that row's coordinates. ` +
+        `- FILL ${fillKeys.join(', ')} for each row using information in the document text ${near}. ` +
           `${naming.charAt(0).toUpperCase()}${naming.slice(1)} — fill each with the value its name implies. ` +
           `If the names are generic, use the most useful identifying label from the text (site/sample/species/place name) ` +
           `and further distinguishing attributes. Keep values short. Use "" when the text offers nothing.`
@@ -350,7 +473,7 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, spe
   if (notes) {
     tasks.push(
       `- NOTES: fill "notes_col" for each row (this is a separate user-facing Notes column, not your "note" reasoning). ` +
-        `The user wants the notes to contain: ${(notesSpec || '').trim() || 'a short, useful observation about this row drawn from the document text'}. ` +
+        `The user wants the notes to contain: ${(notesSpec || '').trim() || `a short, useful observation about this row drawn from the document text ${near}`}. ` +
         `Keep each note short and grounded in the text. Use "" when there is nothing relevant.`
     );
   }
@@ -358,14 +481,27 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, spe
     tasks.push(
       `- FLAG false positives: set "delete": true on rows whose values are clearly NOT geographic coordinates ` +
         `(dates, years, measurements, page or figure numbers, sample counts, citation spans, ratios, …) ` +
-        `based on the surrounding text, and say why in "note". ` +
+        `based on the document text ${near}, and say why in "note". ` +
         `Set "delete": false whenever the row is, or even might be, a real coordinate — when in doubt, keep it.`
     );
   }
 
+  const anchorNote = anchored
+    ? `Each row is anchored to the exact span of page text its coordinate was detected in — the same span ` +
+      `CoordRippr highlights on the page. In the DOCUMENT TEXT that span is wrapped in markers CoordRippr ` +
+      `inserted and that are not part of the document: [[<row id>.lat]]…[[/]] and [[<row id>.lon]]…[[/]]; ` +
+      `a label ending in a digit (lat2, lon2) is the rest of a value split across a line or page break. ` +
+      `Every anchor is listed again under its row with the page, the character offsets and the exact text ` +
+      `between the markers. The anchored span IS that row: however many similar numbers the page holds, only ` +
+      `that one belongs to it — read the text around it for that row's verdict, columns, notes and flags, and ` +
+      `ignore every other occurrence. A row whose line says it has no anchor here (a box marked by hand, or an ` +
+      `anchor on a page not included in this request) must be judged from the page text as a whole.\n\n`
+    : '';
+
   const system =
     `You are a meticulous data-extraction assistant for CoordRippr, a tool that pulls geographic coordinates out of PDFs. ` +
     `You receive CSV rows (coordinates with page references) and the text of the PDF pages they came from.\n\n` +
+    anchorNote +
     `Tasks:\n${tasks.join('\n')}\n\n` +
     `Respond with ONLY a JSON array, no prose, one object per row:\n` +
     `[{"row": "<row id exactly as given>", "verdict": "ok"|"mismatch"|"not_found", ` +
@@ -388,12 +524,30 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, spe
     lines.push(
       `${r.id} | ${r.num} | ${cells.join(' | ')} | ${r.lat ?? ''} | ${r.lon ?? ''} | ${r.file} p.${r.page}`
     );
+    if (!anchored) continue;
+    const list = r.anchors || [];
+    if (list.length === 0) {
+      lines.push(`  no anchor — this row came from a box marked by hand on the page, not from matched text`);
+      continue;
+    }
+    for (const a of list) {
+      const id = `${r.id}.${a.label}`;
+      const st = plan.status.get(id);
+      // The page is named only when it is not the row's own, so the common case
+      // stays short.
+      const where = a.file === r.file ? `p.${a.page}` : `${a.file} p.${a.page}`;
+      // JSON.stringify escapes the inner double-quote of a DMS value and keeps a
+      // span that straddles a line break on one line.
+      lines.push(st && st.placed
+        ? `  ${markOpen(r.id, a.label)} ${where} chars ${a.start}-${a.end} ${JSON.stringify(st.raw)}`
+        : `  ${id} — ${where} chars ${a.start}-${a.end}, no marker below (${st ? st.why : 'not marked'})`);
+    }
   }
   lines.push('');
   lines.push('DOCUMENT TEXT:');
   for (const p of pages) {
     lines.push(`--- ${p.file} — page ${p.page} ---`);
-    lines.push(p.text);
+    lines.push(plan ? plan.texts.get(pageKey(p.file, p.page)) ?? p.text : p.text);
   }
   return { system, user: lines.join('\n') };
 }
@@ -506,6 +660,20 @@ export function normalizeRename(r) {
 
 export const DEFAULT_CHAR_BUDGET = 24000;
 export const MAX_ROWS_PER_CHUNK = 40;
+// Anchor markers and each anchor's line under its row are added after chunking
+// has budgeted, so leave room for them: roughly 20 characters of markers in the
+// page text plus 70 on the row's own line. Rows carry no anchors when the user
+// turns anchoring off, so the budget is then unchanged.
+export const ANCHOR_OVERHEAD = 90;
+
+// How much of an oversized page survives, and a note in place of the rest.
+// `truncatedAt` tells buildPrompt where the original text stopped: the notice
+// makes the string longer than the cut, so a length check alone would treat
+// offsets past the cut as placeable.
+function trimPage(page, budget) {
+  if (page.text.length <= budget) return { ...page };
+  return { ...page, text: page.text.slice(0, budget) + '\n[…page text truncated…]', truncatedAt: budget };
+}
 
 /**
  * Split one file's work into chunks. Pages are added in order; a chunk closes
@@ -531,7 +699,11 @@ export function chunkWork(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
 
   for (const page of pages) {
     const pageRows = rowsByPage.get(page.page) || [];
-    const size = page.text.length + 50;
+    // Approximate on purpose — a row's anchors may point at another page. It is
+    // an allowance, not accounting.
+    const anchorChars =
+      pageRows.reduce((n, r) => n + ((r.anchors && r.anchors.length) || 0), 0) * ANCHOR_OVERHEAD;
+    const size = page.text.length + 50 + anchorChars;
     if (
       cur.pages.length > 0 &&
       (cur.chars + size > budget || cur.rows.length + pageRows.length > MAX_ROWS_PER_CHUNK)
@@ -539,8 +711,7 @@ export function chunkWork(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
       close();
     }
     // A single oversized page still goes out alone (trimmed).
-    const text = page.text.length > budget ? page.text.slice(0, budget) + '\n[…page text truncated…]' : page.text;
-    cur.pages.push({ ...page, text });
+    cur.pages.push(trimPage(page, budget));
     cur.rows.push(...pageRows);
     cur.chars += size;
   }
@@ -571,9 +742,12 @@ export function chunkPerPage(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
   for (const page of pages) {
     const pageRows = rowsByPage.get(page.page) || [];
     if (pageRows.length === 0) continue;
-    const text = page.text.length > budget ? page.text.slice(0, budget) + '\n[…page text truncated…]' : page.text;
+    // No anchor allowance here, unlike chunkWork: this page is already going out
+    // alone, so the budget only decides how much of it to trim — and trimming
+    // further to make room for markers would cut away the text they live in.
+    const trimmed = trimPage(page, budget);
     for (let i = 0; i < pageRows.length; i += MAX_ROWS_PER_CHUNK) {
-      chunks.push({ pages: [{ ...page, text }], rows: pageRows.slice(i, i + MAX_ROWS_PER_CHUNK) });
+      chunks.push({ pages: [{ ...trimmed }], rows: pageRows.slice(i, i + MAX_ROWS_PER_CHUNK) });
     }
   }
   return chunks;

@@ -19,6 +19,7 @@ import {
   MAX_CONCURRENCY,
   MAX_BATCH_DELAY_MS,
   MAX_ROWS_PER_CHUNK,
+  ANCHOR_OVERHEAD,
   DEFAULT_TEMPERATURE,
   MIN_TEMPERATURE,
   MAX_TEMPERATURE,
@@ -337,6 +338,256 @@ test('buildPrompt adds the NOTES task with the user spec', () => {
   assert.match(system, /NOTES/);
   assert.match(system, /"notes_col": "<string>"/);
   assert.match(system, /the habitat near each coordinate/);
+});
+
+// --- Text anchors -----------------------------------------------------------
+//
+// The marker literals are hardcoded on purpose: changing the syntax should break
+// these tests, because it changes what every provider sees.
+
+// One page whose text holds two coordinates, with the offsets derived rather
+// than counted by hand so the fixture cannot drift.
+const LAT = '41°24\'12.2"N';
+const LON = '2°10\'26.5"E';
+const PAGE_TEXT = `Collected at ${LAT}, ${LON} (Barcelona) in May.`;
+const at = (needle) => ({ start: PAGE_TEXT.indexOf(needle), end: PAGE_TEXT.indexOf(needle) + needle.length });
+
+const anchoredRow = (over = {}) => ({
+  id: 'r1', num: 1, cells: ['', ''], lat: 41.40338, lon: 2.17403, file: 'a.pdf', page: 4,
+  anchors: [
+    { label: 'lat', file: 'a.pdf', page: 4, ...at(LAT) },
+    { label: 'lon', file: 'a.pdf', page: 4, ...at(LON) },
+  ],
+  ...over,
+});
+const anchoredPages = (over = {}) => [{ file: 'a.pdf', page: 4, text: PAGE_TEXT, ...over }];
+const anchorBase = { cols: ['Genus', 'Species'], extra: '', verify: true, genus: true, fill: true, flagDelete: true };
+
+test('anchoring is inert until it is asked for', () => {
+  const args = { ...anchorBase, rows: [anchoredRow()], pages: anchoredPages() };
+  const off = buildPrompt({ ...args, anchor: false });
+  const absent = buildPrompt(args);
+  assert.equal(off.user, absent.user);
+  assert.equal(off.system, absent.system);
+  assert.doesNotMatch(off.user, /\[\[/);
+});
+
+test('buildPrompt wraps each anchored span and lists it under its row', () => {
+  const { user } = buildPrompt({ ...anchorBase, rows: [anchoredRow()], pages: anchoredPages(), anchor: true });
+  assert.ok(user.includes(`[[r1.lat]]${LAT}[[/]]`), user);
+  assert.ok(user.includes(`[[r1.lon]]${LON}[[/]]`), user);
+  const { start, end } = at(LAT);
+  assert.ok(user.includes(`  [[r1.lat]] p.4 chars ${start}-${end} ${JSON.stringify(LAT)}`), user);
+});
+
+test('anchor lines quote the matched text with JSON escaping', () => {
+  const { user } = buildPrompt({ ...anchorBase, rows: [anchoredRow()], pages: anchoredPages(), anchor: true });
+  // The DMS value contains a double quote; it must be escaped, not raw.
+  assert.match(user, /chars \d+-\d+ "41°24'12\.2\\"N"/);
+});
+
+test('several anchors on one page are spliced right-to-left so offsets stay valid', () => {
+  const text = 'A 11.1 B 22.2 C 33.3 D';
+  const anchors = ['11.1', '22.2', '33.3'].map((v, i) => ({
+    label: i === 0 ? 'lat' : `lat${i + 1}`, file: 'f.pdf', page: 1,
+    start: text.indexOf(v), end: text.indexOf(v) + v.length,
+  }));
+  const { user } = buildPrompt({
+    ...anchorBase,
+    rows: [{ id: 'r7', num: 1, cells: [], lat: 1, lon: 2, file: 'f.pdf', page: 1, anchors }],
+    pages: [{ file: 'f.pdf', page: 1, text }],
+    anchor: true,
+  });
+  assert.ok(user.includes('[[r7.lat]]11.1[[/]]'), user);
+  assert.ok(user.includes('[[r7.lat2]]22.2[[/]]'), user);
+  assert.ok(user.includes('[[r7.lat3]]33.3[[/]]'), user);
+});
+
+test('an anchor on a page outside this request is listed but not marked', () => {
+  const row = anchoredRow({
+    anchors: [
+      { label: 'lat', file: 'a.pdf', page: 4, ...at(LAT) },
+      { label: 'lon', file: 'a.pdf', page: 5, start: 12, end: 26 },
+    ],
+  });
+  const { user } = buildPrompt({ ...anchorBase, rows: [row], pages: anchoredPages(), anchor: true });
+  assert.ok(user.includes('[[r1.lat]]'), user);
+  assert.doesNotMatch(user, /\[\[r1\.lon\]\]/);
+  assert.match(user, /r1\.lon — p\.5 chars 12-26, no marker below \(that page is not included in this request\)/);
+});
+
+test('an anchor past a truncated page’s kept text is dropped, with its reason', () => {
+  const long = 'x'.repeat(300);
+  const row = anchoredRow({
+    page: 1,
+    anchors: [{ label: 'lat', file: 'a.pdf', page: 1, start: 200, end: 210 }],
+  });
+  const { user } = buildPrompt({
+    ...anchorBase, rows: [row],
+    // Trimmed at 100: the notice pushes text.length past 210, so a naive length
+    // check would wrongly treat this anchor as placeable.
+    pages: [{ file: 'a.pdf', page: 1, text: long.slice(0, 100) + '\n[…page text truncated…]', truncatedAt: 100 }],
+    anchor: true,
+  });
+  assert.doesNotMatch(user, /\[\[r1\.lat\]\]x/);
+  assert.match(user, /no marker below \(it falls outside the page text included here\)/);
+});
+
+test('overlapping anchors: only the first is marked', () => {
+  const text = 'abcdefghijklmnopqrstuvwxyz';
+  const { user } = buildPrompt({
+    ...anchorBase,
+    rows: [
+      { id: 'r1', num: 1, cells: [], lat: 1, lon: 2, file: 'f.pdf', page: 1, anchors: [{ label: 'lat', file: 'f.pdf', page: 1, start: 10, end: 20 }] },
+      { id: 'r2', num: 2, cells: [], lat: 1, lon: 2, file: 'f.pdf', page: 1, anchors: [{ label: 'lat', file: 'f.pdf', page: 1, start: 15, end: 25 }] },
+    ],
+    pages: [{ file: 'f.pdf', page: 1, text }],
+    anchor: true,
+  });
+  assert.ok(user.includes('[[r1.lat]]klmnopqrst[[/]]'), user);
+  assert.doesNotMatch(user, /\[\[r2\.lat\]\]p/);
+  assert.match(user, /r2\.lat — .*overlaps another row's anchor/);
+});
+
+test('identical spans on two rows are marked once, never nested', () => {
+  const text = 'abcdefghijklmnopqrstuvwxyz';
+  const span = { label: 'lat', file: 'f.pdf', page: 1, start: 5, end: 10 };
+  const { user } = buildPrompt({
+    ...anchorBase,
+    rows: [
+      { id: 'r1', num: 1, cells: [], lat: 1, lon: 2, file: 'f.pdf', page: 1, anchors: [{ ...span }] },
+      { id: 'r2', num: 2, cells: [], lat: 1, lon: 2, file: 'f.pdf', page: 1, anchors: [{ ...span }] },
+    ],
+    pages: [{ file: 'f.pdf', page: 1, text }],
+    anchor: true,
+  });
+  assert.equal(user.split('[[/]]').length - 1, 1);
+  assert.ok(user.includes('[[r1.lat]]fghij[[/]]'), user);
+});
+
+test('page text that already looks like a marker is neutralised', () => {
+  const text = 'See [[r1.lat]] fake [[/]] and note [9] here.';
+  const { user } = buildPrompt({
+    ...anchorBase,
+    rows: [{ id: 'r1', num: 1, cells: [], lat: 1, lon: 2, file: 'f.pdf', page: 1, anchors: [{ label: 'lat', file: 'f.pdf', page: 1, start: 0, end: 3 }] }],
+    pages: [{ file: 'f.pdf', page: 1, text }],
+    anchor: true,
+  });
+  const body = user.slice(user.indexOf('DOCUMENT TEXT:'));
+  assert.ok(body.includes('⟦⟦r1.lat⟧⟧ fake ⟦⟦/⟧⟧'), body);
+  assert.ok(body.includes('⟦9⟧'), body);
+  // The only real markers left in the page text are the two we inserted.
+  assert.equal(body.split('[[').length - 1, 2);
+});
+
+test('neutralising brackets never moves an anchor', () => {
+  // Brackets BEFORE the span: a sanitiser that changed length would shift it.
+  const text = '[see 12] and [also 34] then 41.4 ends';
+  const { user } = buildPrompt({
+    ...anchorBase,
+    rows: [{ id: 'r1', num: 1, cells: [], lat: 41.4, lon: 2, file: 'f.pdf', page: 1, anchors: [{ label: 'lat', file: 'f.pdf', page: 1, start: text.indexOf('41.4'), end: text.indexOf('41.4') + 4 }] }],
+    pages: [{ file: 'f.pdf', page: 1, text }],
+    anchor: true,
+  });
+  assert.ok(user.includes('[[r1.lat]]41.4[[/]]'), user);
+});
+
+test('a row with no anchors is reported as hand-marked', () => {
+  const { user } = buildPrompt({
+    ...anchorBase,
+    rows: [anchoredRow(), { id: 'r2', num: 2, cells: [], lat: 1, lon: 2, file: 'a.pdf', page: 4, anchors: [] }],
+    pages: anchoredPages(),
+    anchor: true,
+  });
+  assert.match(user, /no anchor — this row came from a box marked by hand on the page/);
+});
+
+test('the anchor guidance appears only when a row really carries an anchor', () => {
+  const withNone = buildPrompt({
+    ...anchorBase,
+    rows: [{ id: 'r1', num: 1, cells: [], lat: 1, lon: 2, file: 'a.pdf', page: 4, anchors: [] }],
+    pages: anchoredPages(), anchor: true,
+  });
+  assert.doesNotMatch(withNone.system, /anchored span IS that row/);
+  assert.match(withNone.system, /you cannot find support for the coordinates/);
+
+  const withOne = buildPrompt({ ...anchorBase, rows: [anchoredRow()], pages: anchoredPages(), anchor: true });
+  assert.match(withOne.system, /anchored span IS that row/);
+  assert.match(withOne.system, /\[\[<row id>\.lat\]\]/);
+});
+
+test('VERIFY reserves not_found for unanchored rows', () => {
+  const on = buildPrompt({ ...anchorBase, rows: [anchoredRow()], pages: anchoredPages(), anchor: true });
+  assert.match(on.system, /ITS OWN ANCHORED SPAN/);
+  assert.match(on.system, /ONLY for a row with no anchor here/);
+  const off = buildPrompt({ ...anchorBase, rows: [anchoredRow()], pages: anchoredPages() });
+  assert.match(off.system, /you cannot find support for the coordinates/);
+  assert.doesNotMatch(off.system, /ANCHORED SPAN/);
+});
+
+test('the other tasks point at the anchored span when anchoring is on', () => {
+  // A third column keeps FILL alive: with only two, Genus and Species already
+  // cover both and FILL is skipped by design.
+  const args = {
+    ...anchorBase, cols: ['Genus', 'Species', 'Depth'],
+    rows: [anchoredRow()], pages: anchoredPages(), species: true, notes: true, notesSpec: '',
+  };
+  const on = buildPrompt({ ...args, anchor: true });
+  for (const task of ['GENUS', 'SPECIES', 'FILL', 'NOTES', 'FLAG']) assert.match(on.system, new RegExp(task));
+  assert.equal(on.system.split("around that row's anchored span").length - 1, 5);
+  assert.doesNotMatch(on.system, /near that row's coordinates/);
+
+  const off = buildPrompt(args);
+  assert.match(off.system, /near that row's coordinates/);
+  assert.doesNotMatch(off.system, /anchored span/);
+});
+
+test('every anchor key on a row line appears in the document text, and vice versa', () => {
+  // A mixed fixture: one placed, one off-page, one truncated away, one overlap.
+  const text = 'AAAA 11.1 BBBB 22.2 CCCC';
+  const rows = [
+    { id: 'r1', num: 1, cells: [], lat: 1, lon: 2, file: 'f.pdf', page: 1, anchors: [
+      { label: 'lat', file: 'f.pdf', page: 1, start: 5, end: 9 },
+      { label: 'lon', file: 'f.pdf', page: 9, start: 0, end: 4 },
+    ] },
+    { id: 'r2', num: 2, cells: [], lat: 1, lon: 2, file: 'f.pdf', page: 1, anchors: [
+      { label: 'lat', file: 'f.pdf', page: 1, start: 6, end: 9 },
+      { label: 'lon', file: 'f.pdf', page: 1, start: 15, end: 19 },
+    ] },
+  ];
+  const { user } = buildPrompt({ ...anchorBase, rows, pages: [{ file: 'f.pdf', page: 1, text }], anchor: true });
+  const split = user.indexOf('DOCUMENT TEXT:');
+  const rowBlock = user.slice(0, split);
+  const docBlock = user.slice(split);
+  const keys = (s) => new Set((s.match(/\[\[[^\]]+\]\]/g) || []).filter((m) => m !== '[[/]]'));
+  assert.deepEqual([...keys(rowBlock)].sort(), [...keys(docBlock)].sort());
+  assert.ok(keys(rowBlock).size > 0);
+});
+
+test('chunkWork leaves room for the anchors it will not see', () => {
+  const pages = [
+    { file: 'f', page: 1, text: 'x'.repeat(400) },
+    { file: 'f', page: 2, text: 'y'.repeat(400) },
+  ];
+  const plain = [{ id: 'r1', page: 1 }, { id: 'r2', page: 2 }];
+  const withAnchors = plain.map((r) => ({ ...r, anchors: [{ label: 'lat' }, { label: 'lon' }] }));
+  assert.ok(ANCHOR_OVERHEAD > 0);
+  assert.equal(chunkWork(pages, plain, 1000).length, 1);
+  // 2 anchors × ANCHOR_OVERHEAD per page pushes the pair over the same budget.
+  assert.equal(chunkWork(pages, withAnchors, 1000).length, 2);
+});
+
+test('both chunkers record how much of a trimmed page survived', () => {
+  const pages = [{ file: 'f', page: 1, text: 'a'.repeat(500) }, { file: 'f', page: 2, text: 'short' }];
+  const rows = [{ id: 'r1', page: 1 }, { id: 'r2', page: 2 }];
+  for (const chunks of [chunkWork(pages, rows, 100), chunkPerPage(pages, rows, 100)]) {
+    const all = chunks.flatMap((c) => c.pages);
+    const big = all.find((p) => p.page === 1);
+    const small = all.find((p) => p.page === 2);
+    assert.equal(big.truncatedAt, 100);
+    assert.equal(small.truncatedAt, undefined);
+    assert.ok(big.text.length > 100, 'the truncation notice makes the text longer than the cut');
+  }
 });
 
 test('chunkWork splits by budget and keeps rows with their pages', () => {
