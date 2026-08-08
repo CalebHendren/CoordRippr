@@ -25,6 +25,7 @@ import {
   estimateExportSize, formatBytes, PROJECT_FILE_EXT,
 } from './projectio.js';
 import { findDuplicateRowIds } from './dedup.js';
+import { hashHex, docFingerprint, findDuplicateFiles, countDuplicates } from './pdfid.js';
 
 const api = window.coordrippr;
 const IS_WEB = api.platform === 'web';
@@ -130,11 +131,15 @@ async function loadFiles(specs) {
       doc: null, error: null, numPages: 0, pages: [],
       intensity: null, // per-PDF net override; null = follow the global net
       hidden: false, // user can set a PDF aside as "not needed"
+      byteHash: null, textHash: null, // content identity — see "Duplicate PDFs"
     };
     state.files.push(file);
     try {
       setStatus(`Scanning ${spec.name} (${done}/${specs.length})…`, true);
       const data = spec.data || (await api.readFile(spec.path));
+      // Hash the bytes here or never: pdf.js transfers the buffer to its worker
+      // and leaves it detached.
+      file.byteHash = await hashHex(data);
       // Pathless PDFs (drag & drop, web) can only be restored from stored
       // bytes — copy before pdf.js transfers the buffer to its worker.
       if (project && !file.path) {
@@ -144,6 +149,7 @@ async function loadFiles(specs) {
       file.doc = await pdfjsLib.getDocument({ data, ...PDF_OPEN_OPTS }).promise;
       file.numPages = file.doc.numPages;
       let prevCtx = null;
+      const pageTexts = [];
       for (let p = 1; p <= file.numPages; p++) {
         const page = await file.doc.getPage(p);
         const vp = page.getViewport({ scale: 1 });
@@ -151,10 +157,15 @@ async function loadFiles(specs) {
         file.pages.push(pageRec);
         const tc = await page.getTextContent();
         const { text, spans } = buildPageText(tc);
+        pageTexts.push(text);
         const ctx = { pageRec, text, spans };
         scanPage(file, ctx, prevCtx);
         prevCtx = ctx;
       }
+      // The text fingerprint rides along on the scan — the page text is already
+      // in hand, so identifying the document costs nothing extra.
+      const print = docFingerprint(pageTexts);
+      file.textHash = print ? await hashHex(print) : null;
     } catch (err) {
       file.error = err && err.message ? err.message : String(err);
     }
@@ -166,6 +177,13 @@ async function loadFiles(specs) {
   }
   renderAll();
   persistSoon();
+  // Passive: say so, hide nothing. The review dialog is where anything happens.
+  const dupes = countDuplicates(findDuplicateFiles(state.files.filter((f) => !f.error)));
+  if (dupes) {
+    setStatus(dupes === 1
+      ? '1 PDF looks like a duplicate — “Duplicate PDFs…” to review.'
+      : `${dupes} PDFs look like duplicates — “Duplicate PDFs…” to review.`);
+  }
 }
 
 // One page's detections: per-page pairs + pairs straddling the previous-page
@@ -1731,6 +1749,128 @@ $('#dedup-run').addEventListener('click', () => {
   dedupDialog.close();
 });
 
+// ---------------------------------------------------------------------------
+// Duplicate PDFs
+//
+// A folder scan routinely picks the same paper up twice — once as 168766.pdf and
+// once as Xenopygus_marginatus.pdf, or once from the publisher and once as a
+// scan. The names say nothing, so this matches on content: identical bytes, or
+// identical extracted text. Everything found is shown for review; applying only
+// hides, which is reversible.
+// ---------------------------------------------------------------------------
+
+const dupDialog = $('#dup-dialog');
+
+// Hashes are captured at load time, but a project saved before that existed —
+// or restored without its page text — can be missing the text one. Fill the gaps
+// on demand rather than making every launch pay for them.
+async function ensureFileHashes() {
+  const missing = state.files.filter((f) => !f.error && !f.textHash && f.pages.length);
+  if (missing.length === 0) return;
+  setStatus(`Reading ${missing.length} PDF${missing.length === 1 ? '' : 's'} to compare contents…`, true);
+  for (const file of missing) {
+    try {
+      const texts = [];
+      for (const pageRec of file.pages) {
+        if (!pageRec.proxy) continue;
+        texts.push(buildPageText(await pageRec.proxy.getTextContent()).text);
+      }
+      const print = docFingerprint(texts);
+      file.textHash = print ? await hashHex(print) : null;
+    } catch { /* an unreadable PDF simply has no text fingerprint */ }
+  }
+  setStatus('');
+  persistSoon();
+}
+
+const DUP_REASON = {
+  bytes: 'identical file (same bytes)',
+  text: 'same text (re-saved copy)',
+};
+
+function renderDupGroups(groups) {
+  const wrap = $('#dup-groups');
+  wrap.innerHTML = '';
+  groups.forEach((g, gi) => {
+    const box = document.createElement('fieldset');
+    box.className = 'dup-group';
+    const legend = document.createElement('legend');
+    legend.textContent = DUP_REASON[g.reason] || g.reason;
+    box.appendChild(legend);
+    for (const id of [g.keep, ...g.dupes]) {
+      const file = state.files.find((f) => f.id === id);
+      if (!file) continue;
+      const line = document.createElement('div');
+      line.className = 'dup-line';
+      // One radio per group picks the survivor; everything else in the group is
+      // hidden. Re-deriving the checkboxes from the radio keeps the two honest.
+      const keep = document.createElement('input');
+      keep.type = 'radio';
+      keep.name = `dup-keep-${gi}`;
+      keep.value = id;
+      keep.checked = id === g.keep;
+      keep.addEventListener('change', syncDupPreview);
+      const label = document.createElement('label');
+      label.appendChild(keep);
+      label.appendChild(document.createTextNode(` keep — ${file.name} (${file.numPages} p.)`));
+      line.appendChild(label);
+      box.appendChild(line);
+    }
+    wrap.appendChild(box);
+  });
+}
+
+// Everything in a group except its chosen keeper.
+function dupsToHide() {
+  const ids = [];
+  for (const box of $('#dup-groups').querySelectorAll('.dup-group')) {
+    const radios = [...box.querySelectorAll('input[type="radio"]')];
+    const keep = radios.find((r) => r.checked);
+    for (const r of radios) if (r !== keep) ids.push(r.value);
+  }
+  return ids;
+}
+
+function syncDupPreview() {
+  const n = dupsToHide().length;
+  $('#dup-status').textContent = n === 0
+    ? 'Nothing selected.'
+    : n === 1
+      ? '1 PDF will be set aside — its rows leave the CSV; nothing is deleted.'
+      : `${n} PDFs will be set aside — their rows leave the CSV; nothing is deleted.`;
+  $('#dup-run').disabled = n === 0;
+  $('#dup-run').textContent = n === 1 ? 'Hide 1 PDF' : `Hide ${n} PDFs`;
+}
+
+$('#btn-dup-pdfs').addEventListener('click', async () => {
+  const usable = state.files.filter((f) => !f.error);
+  if (usable.length < 2) { setStatus('Load at least two PDFs to compare.'); return; }
+  await ensureFileHashes();
+  const groups = findDuplicateFiles(state.files.filter((f) => !f.error));
+  if (groups.length === 0) {
+    setStatus(`No duplicate PDFs — all ${usable.length} are different documents.`);
+    return;
+  }
+  renderDupGroups(groups);
+  syncDupPreview();
+  dupDialog.showModal();
+});
+
+$('#dup-run').addEventListener('click', () => {
+  const ids = new Set(dupsToHide());
+  if (ids.size === 0) { syncDupPreview(); return; }
+  for (const file of state.files) if (ids.has(file.id)) file.hidden = true;
+  // A hidden PDF cannot stay the viewed one.
+  if (ids.has(state.currentFile)) {
+    const next = state.files.find((f) => !f.hidden && !f.error);
+    state.currentFile = next ? next.id : null;
+  }
+  renderAll();
+  persistSoon();
+  setStatus(`Set aside ${ids.size} duplicate PDF${ids.size === 1 ? '' : 's'} — find them under “hidden PDFs”.`);
+  dupDialog.close();
+});
+
 function applyFill(rowIds, colKey, value) {
   let n = 0;
   for (const row of state.rows) {
@@ -1926,6 +2066,10 @@ function normalizeLlmPrefs(p) {
   out.retryModels = out.retryModels || {};
   out.retryUrls = out.retryUrls || {};
   out.retryKeys = out.retryKeys || {};
+  // Anchoring is on unless the user turned it off: it is what stops the model
+  // attaching the wrong paragraph to a row. Defaulted here as well as in the
+  // markup so a prefs blob written before the feature behaves like a fresh one.
+  if (out.anchor == null) out.anchor = true;
   return out;
 }
 
@@ -2058,6 +2202,7 @@ function initLlmDialog() {
   // Verification is always on — every sent row must come back with a badge —
   // so it is never restored to "off" from an old preference.
   $('#llm-verify').checked = true;
+  if (prefs.anchor != null) $('#llm-anchor').checked = prefs.anchor;
   if (prefs.genus != null) $('#llm-genus').checked = prefs.genus;
   if (prefs.species != null) $('#llm-species').checked = prefs.species;
   if (prefs.fill != null) $('#llm-fill').checked = prefs.fill;
@@ -2264,6 +2409,8 @@ function collectLlmSettings() {
     temperature: clampTemperature($('#llm-temp').value),
     extra: $('#llm-extra').value,
     verify: $('#llm-verify').checked,
+    // Mark each row's detected span in the page text and repeat it under the row.
+    anchor: $('#llm-anchor').checked,
     genus: $('#llm-genus').checked,
     species: $('#llm-species').checked,
     fill: $('#llm-fill').checked,
@@ -2310,6 +2457,7 @@ function collectLlmSettings() {
   prefs.temperature = s.temperature;
   prefs.extra = s.extra;
   prefs.verify = s.verify;
+  prefs.anchor = s.anchor;
   prefs.genus = s.genus;
   prefs.species = s.species;
   prefs.fill = s.fill;
@@ -2329,9 +2477,42 @@ function collectLlmSettings() {
   return s;
 }
 
+// A row's text anchors: the exact character ranges in each page's built text
+// that its detections were found at — the same spans that draw the highlights.
+// Sent to the model so it never has to work out which of a page's similar-
+// looking numbers a row means. Hand-marked boxes have no span, so they
+// contribute no anchor and the row goes out unanchored. Order is latDet, lonDet,
+// then extras, so labels come out lat / lon / lat2 / lon2, the digits marking
+// the continuation of a value broken by a line or page break.
+function anchorsForRow(row) {
+  const src = row.src || {};
+  const out = [];
+  const seen = new Set();
+  const nth = { lat: 0, lon: 0 };
+  for (const detId of [src.latDet, src.lonDet, ...(src.extraDets || [])]) {
+    if (!detId) continue;
+    const det = state.dets.get(detId);
+    if (!det || !det.span) continue; // hand-marked box: no text offset to anchor to
+    const [start, end] = det.span;
+    if (!(start >= 0 && end > start)) continue;
+    const key = `${det.fileId}:${det.pageNum}:${start}:${end}`;
+    if (seen.has(key)) continue; // the same span reached twice
+    seen.add(key);
+    const file = state.files.find((f) => f.id === det.fileId);
+    if (!file) continue;
+    const half = det.half === 'lon' ? 'lon' : 'lat';
+    nth[half]++;
+    out.push({
+      label: nth[half] === 1 ? half : `${half}${nth[half]}`,
+      file: file.name, page: det.pageNum, start, end,
+    });
+  }
+  return out;
+}
+
 // Rows grouped per file with the page numbers to send. Only ticked files; with
 // unsentOnly, rows an LLM already answered are skipped (and counted for status).
-function buildLlmWork({ scope, files, unsentOnly }) {
+function buildLlmWork({ scope, files, unsentOnly, anchor }) {
   const work = [];
   let skippedSent = 0;
   // Row numbers reported back to the user (e.g. the deletion summary) should
@@ -2349,6 +2530,9 @@ function buildLlmWork({ scope, files, unsentOnly }) {
           lat: r.lat != null ? Number(r.lat.toFixed(6)) : null,
           lon: r.lon != null ? Number(r.lon.toFixed(6)) : null,
           file: file.name, page: r.src.pageNum,
+          // Empty when the user turned anchoring off, so the prompt and the
+          // chunk budgets are exactly what they were before the feature.
+          anchors: anchor ? anchorsForRow(r) : [],
         });
       }
     });
@@ -2424,7 +2608,7 @@ async function previewLlmPrompt() {
   let chunk = null;
   if (s.files.size) {
     // Ignore the "unsent only" filter here so a real chunk shows even after a run.
-    const { work } = buildLlmWork({ scope: s.scope, files: s.files, unsentOnly: false });
+    const { work } = buildLlmWork({ scope: s.scope, files: s.files, unsentOnly: false, anchor: s.anchor });
     if (work.length) {
       const w = work[0];
       const pages = [];
@@ -2435,15 +2619,32 @@ async function previewLlmPrompt() {
     }
   }
   if (!chunk) {
+    // Offsets are found in the string rather than written by hand, so editing
+    // this example cannot silently leave it mis-anchored.
+    const exLat = '41°24\'12.2"N';
+    const exLon = '2°10\'26.5"E';
+    const exText =
+      `Specimens were collected at ${exLat} ${exLon} (Barcelona) in May 2019.\n` +
+      '(No PDF text available for a real preview — load PDFs and detect coordinates, or tick a PDF to send. ' +
+      'The instructions, and the anchor markers, are exactly what will be sent.)';
+    const exAnchor = (label, str) => ({
+      label, file: 'example.pdf', page: 1,
+      start: exText.indexOf(str), end: exText.indexOf(str) + str.length,
+    });
     chunk = {
-      rows: [{ id: 'example', num: 1, cells: emptyCells(), lat: 41.4034, lon: 2.1741, file: 'example.pdf', page: 1 }],
-      pages: [{ file: 'example.pdf', page: 1, text: '(No PDF text available for a real preview — load PDFs and detect coordinates, or tick a PDF to send. The instructions are exactly what will be sent.)' }],
+      rows: [{
+        id: 'example', num: 1, cells: emptyCells(), lat: 41.4034, lon: 2.1741,
+        file: 'example.pdf', page: 1,
+        anchors: s.anchor ? [exAnchor('lat', exLat), exAnchor('lon', exLon)] : [],
+      }],
+      pages: [{ file: 'example.pdf', page: 1, text: exText }],
     };
   }
   const { system, user } = buildPrompt({
     rows: chunk.rows, pages: chunk.pages, cols: state.cols,
     extra: s.extra, verify: s.verify, fill: s.fill, genus: s.genus, species: s.species,
     flagDelete: s.flagDelete, notes: s.notes, notesSpec: s.notesSpec, allowPrev: allow, allowNext: allow,
+    anchor: s.anchor,
   });
   $('#llm-preview-system').textContent = system;
   const MAX = 8000;
@@ -2860,7 +3061,7 @@ $('#llm-run').addEventListener('click', async () => {
       rows: chunk.rows, pages: chunk.pages, cols: state.cols,
       extra: s.extra, verify: s.verify, fill: s.fill, genus: s.genus, species: s.species,
       flagDelete: s.flagDelete, notes: s.notes, notesSpec: s.notesSpec,
-      allowPrev: allowPrevHere, allowNext: allowNextHere,
+      allowPrev: allowPrevHere, allowNext: allowNextHere, anchor: s.anchor,
     });
     return postPrompt(system, user, label, cfg);
   };
@@ -2871,8 +3072,10 @@ $('#llm-run').addEventListener('click', async () => {
   const sendConfirm = (chunk, label, cfg) => {
     const { system, user } = buildPrompt({
       rows: chunk.rows, pages: chunk.pages, cols: state.cols,
+      // Anchors matter most here: "is this a real coordinate" is exactly a
+      // question about the anchored text, and this model's answer deletes rows.
       extra: s.extra, verify: false, fill: false, genus: false, species: false,
-      flagDelete: true, notes: false, allowPrev: false, allowNext: false,
+      flagDelete: true, notes: false, allowPrev: false, allowNext: false, anchor: s.anchor,
     });
     return postPrompt(system, user, label, cfg);
   };
@@ -3274,6 +3477,10 @@ async function reattachFile(file) {
       if (stored && stored.bytes) data = stored.bytes;
     }
     if (!data) throw new Error('source PDF unavailable — open it again to see pages');
+    // Same one-shot as in loadFiles: getDocument detaches the buffer. Only fills
+    // a gap — a snapshot written before hashing existed, or a file that has been
+    // replaced on disk since.
+    if (!file.byteHash) file.byteHash = await hashHex(data);
     file.doc = await pdfjsLib.getDocument({ data, ...PDF_OPEN_OPTS }).promise;
     file.numPages = file.doc.numPages;
     for (const pageRec of file.pages) {

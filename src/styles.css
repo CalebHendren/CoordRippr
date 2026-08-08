@@ -527,3 +527,15 @@ fieldset.mark-target label { display: flex; align-items: center; gap: 6px; }
   display: flex; align-items: center; gap: 6px;
 }
 #dedup-status { margin: 12px 0 2px; min-height: 18px; }
+
+/* ---------- duplicate-PDF review dialog ---------- */
+#dup-dialog { width: min(560px, 94vw); }
+#dup-dialog h2 { margin: 0 0 8px; font-size: 15px; }
+#dup-dialog .dedup-intro { margin: 0 0 12px; line-height: 1.5; }
+#dup-groups { display: flex; flex-direction: column; gap: 10px; max-height: 50vh; overflow-y: auto; }
+.dup-group {
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px 8px; margin: 0;
+}
+.dup-group legend { color: var(--muted); font-size: 11px; padding: 0 4px; }
+.dup-line label { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+#dup-status { margin: 12px 0 2px; min-height: 18px; }

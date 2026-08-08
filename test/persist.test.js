@@ -113,6 +113,21 @@ test('a hidden PDF survives the pack → unpack round trip', () => {
   assert.equal(restored.files[0].hidden, true);
 });
 
+test('content hashes survive the round trip, and are null when never computed', () => {
+  const state = sampleState();
+  state.files[0].byteHash = 'abc123';
+  state.files[0].textHash = 'def456';
+  const restored = unpackState(JSON.parse(JSON.stringify(packState(state, 1))));
+  assert.equal(restored.files[0].byteHash, 'abc123');
+  assert.equal(restored.files[0].textHash, 'def456');
+
+  // A snapshot written before hashing existed carries neither; they are filled
+  // in on demand rather than being treated as "matches everything".
+  const older = unpackState(JSON.parse(JSON.stringify(packState(sampleState(), 1))));
+  assert.equal(older.files[0].byteHash, null);
+  assert.equal(older.files[0].textHash, null);
+});
+
 test('unpackState rejects garbage and fills defaults', () => {
   assert.equal(unpackState(null), null);
   assert.equal(unpackState({}), null);

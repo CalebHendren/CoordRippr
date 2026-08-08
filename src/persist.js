@@ -38,6 +38,11 @@ export function packState(state, nextId) {
       numPages: f.numPages,
       intensity: typeof f.intensity === 'number' ? f.intensity : null, // per-PDF net override
       hidden: !!f.hidden, // user set this PDF aside (excluded from view/CSV, kept for un-hiding)
+      // Content identity, for finding the same document loaded twice under two
+      // names. Optional: a snapshot written before these existed simply has
+      // none, and they are recomputed on demand.
+      byteHash: f.byteHash || null,
+      textHash: f.textHash || null,
       pages: f.pages.map((p) => ({ num: p.num, w: p.w, h: p.h, dets: [...p.dets] })),
     })),
     dets: [...state.dets.values()].map((d) => ({
@@ -107,6 +112,8 @@ export function unpackState(rawSnap) {
     numPages: f.numPages || 0,
     intensity: typeof f.intensity === 'number' ? f.intensity : null, // per-PDF net override
     hidden: !!f.hidden, // set-aside PDFs stay set aside across reloads
+    byteHash: f.byteHash || null,
+    textHash: f.textHash || null,
     pages: (f.pages || []).map((p) => ({
       num: p.num, w: p.w, h: p.h, proxy: null, dets: [...(p.dets || [])],
     })),

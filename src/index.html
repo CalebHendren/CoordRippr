@@ -21,6 +21,7 @@
     <div class="tb-group">
       <button id="btn-open-folder" title="Scan every PDF in a folder (recursive)">Open Folder…</button>
       <button id="btn-open-files" title="Pick individual PDF files">Open PDFs…</button>
+      <button id="btn-dup-pdfs" title="Find PDFs loaded more than once — matched on their contents, never their file names">Duplicate PDFs…</button>
     </div>
     <div class="tb-group" id="format-group" title="How latitude / longitude are written in the CSV">
       <span class="tb-label">Coords:</span>
@@ -186,6 +187,7 @@
         <fieldset class="wide">
           <legend>Tasks</legend>
           <label title="Every row you send is checked against the PDF text and gets a ✓ / ⚠ / ? badge. Rows the model skips (no badge) are re-sent automatically until they come back badged."><input type="checkbox" id="llm-verify" checked disabled /> Verify coordinates against the PDF text <span class="muted">(always on — every sent row gets a badge)</span></label>
+          <label title="Marks each row's coordinate in the page text that is sent — the same span the yellow highlight covers — and repeats that anchor under the row with its page, character offsets and matched text. The model then knows exactly which occurrence of a number belongs to which row instead of guessing between look-alikes on the same page. Rows marked by hand have no anchor. See it in Preview prompt."><input type="checkbox" id="llm-anchor" checked /> Anchor each row to the exact text it was found in <span class="muted">(recommended)</span></label>
           <label title="Fills the Genus column (column 1) with a single-word genus taken from the PDF text near each coordinate."><input type="checkbox" id="llm-genus" checked /> Extract <strong>Genus</strong> → column 1 <span class="muted">(one word)</span></label>
           <label title="Fills the Species column (column 2) with a single-word species epithet taken from the PDF text near each coordinate."><input type="checkbox" id="llm-species" checked /> Extract <strong>Species</strong> → column 2 <span class="muted">(one word)</span></label>
           <label title="Fills any remaining data columns (beyond those handled by the Genus/Species toggles) from the PDF text."><input type="checkbox" id="llm-fill" /> Fill the other data columns from the PDF text</label>
@@ -367,6 +369,24 @@
       <menu>
         <button value="cancel" type="submit">Cancel</button>
         <button value="ok" type="submit" class="primary">OK</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="dup-dialog">
+    <form method="dialog">
+      <h2>Duplicate PDFs</h2>
+      <p class="muted dedup-intro">
+        The same paper often arrives twice under different names. These are matched on
+        their contents — never on the file name. Pick the copy to keep in each group;
+        the ones you tick are <strong>set aside</strong>, not deleted, and can be brought
+        back from the hidden-PDFs list at any time.
+      </p>
+      <div id="dup-groups"></div>
+      <div id="dup-status" class="muted"></div>
+      <menu>
+        <button value="cancel" type="submit">Cancel</button>
+        <button type="button" id="dup-run" class="primary">Hide duplicates</button>
       </menu>
     </form>
   </dialog>
