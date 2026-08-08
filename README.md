@@ -92,6 +92,17 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     bottom; expand it and click *Show* to bring any of them back — nothing is
     deleted. Hidden state is saved with the session. (To remove a PDF's data
     permanently, delete its rows instead.)
+- **Duplicate PDFs** — the same paper often arrives twice, once as `168766.pdf`
+  and once as `Xenopygus_marginatus.pdf`, and its rows are then indistinguishable
+  from real ones. *Duplicate PDFs…* matches the loaded documents on their
+  **contents, never their names**: identical bytes (a literal re-download), or
+  identical extracted text (the same paper re-saved by a different tool). What it
+  finds goes into a review window with a keeper pre-selected per group — pick a
+  different copy to keep if you like — and the rest are **set aside** using the
+  same Hide mechanism, so nothing is deleted and *Show* brings them back. A
+  folder scan that turns up candidates says so in the status bar but changes
+  nothing on its own. Note that a scanned PDF has no text layer and so no text
+  fingerprint; those are matched byte-for-byte only.
 - **Page view** — Shows only pages with detections by default (*Show all pages*
   to view the rest). Matches are highlighted; hovering a highlight shows the raw
   matched text; the *Highlights* toggle hides the boxes. Clicking a CSV row
@@ -138,6 +149,17 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     (enforced in the prompt and again on the result), so `"Panthera leo"`
     returned for the genus is trimmed to `Panthera`. A separate **Fill the other
     data columns** option covers any additional columns you add.
+  - **Text anchors** (on by default) — a page can carry a dozen coordinates that
+    read alike, and without help the model has to guess which one produced which
+    row. Every row is instead tied to the exact span of page text its coordinate
+    was detected in — the same span the yellow highlight covers. That span is
+    wrapped in `[[r12.lat]]…[[/]]` markers in the text that is sent, and repeated
+    under the row with its page, character offsets and matched text, so the row's
+    verdict, genus, species, notes and flags all come from the right sentence.
+    Verdicts follow the anchor: ✓ and ⚠ judge the anchored span itself, and
+    coordinates marked by hand — which have no text-layer span — are the rows
+    that can still come back `?`. Untick *Anchor each row to the exact text it
+    was found in* to send the plain page text instead.
   - **Second model** — a separate provider/model/key used by two features:
     - *Retry unfinished rows* — after the first model finishes, rows it could
       not verify/badge (or whose Genus/Species/filled columns are still empty)
@@ -151,7 +173,7 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     key. The settings only appear once one of the two features is enabled.
   - **Preview prompt** — shows the exact system and user messages that will be
     sent (built from the current settings and your first page of rows) before
-    anything leaves your machine.
+    anything leaves your machine, anchor markers included.
   - **Runs in the background** — the window can be closed without stopping a run;
     progress continues in the footer status bar, and reopening LLM Assist shows
     the live status or lets you press *Stop*.
@@ -177,8 +199,11 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
     providers accept up to `2`; Anthropic caps at `1` and some current models
     reject the field outright.
   - Per-row verdict badge: ✓ confirmed, ⚠ mismatch (click to apply the suggested
-    correction), ? not found. Rows the model skips are automatically re-sent
-    until they come back badged.
+    correction), ? not found. With text anchors on, ✓ and ⚠ are judgements about
+    the anchored span itself and ? is reserved for rows with no anchor in the
+    request, so ? gets rare and a ⚠ means the anchored text really does say
+    something else. Rows the model skips are automatically re-sent until they
+    come back badged.
   - False-positive flagging: optionally flags rows that are not coordinates
     (dates, measurements, page numbers, etc.) with a 🗑 marker for one-by-one or
     bulk removal (*Delete Flagged*). Two opt-in follow-ups (mutually exclusive,
@@ -295,8 +320,11 @@ Key modules:
 - `src/coords.js` — tokenizer, parser, formatter, intensity levels, and
   `extractCrossPage()`.
 - `src/llm.js` — provider presets, request/response formats, prompt
-  construction, work chunking, and the concurrency runners. Pure module, unit-
-  tested.
+  construction (including the row-to-text anchoring), work chunking, and the
+  concurrency runners. Pure module, unit-tested.
+- `src/pdfid.js` — duplicate-PDF detection: text normalisation, the document
+  fingerprint and its minimum-text guard, hashing, and grouping. Pure module,
+  unit-tested.
 - `src/persist.js` — projects and session snapshots over two interchangeable
   back ends: plain files in the data folder (Electron) and IndexedDB (browser).
   `packState` / `unpackState` / `migrateSnapshot` are pure and unit-tested.
