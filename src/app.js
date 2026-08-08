@@ -353,12 +353,25 @@ function renderFileList() {
   // reachable only through the disclosure below.
   const visible = state.files.filter((f) => !f.hidden);
   const hidden = state.files.filter((f) => f.hidden);
-  for (const f of visible) fileListEl.appendChild(buildFileEntry(f));
-  if (hidden.length) fileListEl.appendChild(buildHiddenSection(hidden));
+  const counts = rowCountsByFile();
+  for (const f of visible) fileListEl.appendChild(buildFileEntry(f, counts));
+  if (hidden.length) fileListEl.appendChild(buildHiddenSection(hidden, counts));
 }
 
-function buildFileEntry(f) {
-  const nDet = f.pages.reduce((a, p) => a + p.dets.length, 0);
+// Coordinates per PDF, keyed by file id. A coordinate is a row (one lat/lon
+// pair), not a highlight: a parsed pair draws two highlights and a hand-drawn
+// mark one, so counting detections reported double for every parsed coordinate.
+function rowCountsByFile() {
+  const counts = new Map();
+  for (const r of state.rows) {
+    if (!r.src) continue; // manually added row, not sourced from any PDF
+    counts.set(r.src.fileId, (counts.get(r.src.fileId) || 0) + 1);
+  }
+  return counts;
+}
+
+function buildFileEntry(f, counts) {
+  const nCoords = counts.get(f.id) || 0;
   const el = document.createElement('div');
   const override = f.intensity != null;
   el.className = 'file-entry'
@@ -367,7 +380,7 @@ function buildFileEntry(f) {
     + (f.hidden ? ' hidden-file' : '');
   const meta = f.error
     ? `<span class="err">error: ${escapeHtml(f.error)}</span>`
-    : `<span class="${nDet ? 'count' : 'zero'}">${nDet} coord${nDet === 1 ? '' : 's'}</span> · ${f.numPages} p.`;
+    : `<span class="${nCoords ? 'count' : 'zero'}">${nCoords} coord${nCoords === 1 ? '' : 's'}</span> · ${f.numPages} p.`;
   el.innerHTML = `<div class="fname">${escapeHtml(f.name)}</div><div class="fmeta">${meta}</div>`;
   // Controls row: the per-PDF detection-net override (visible files only, so a
   // stubborn document can get a more aggressive net than the batch) plus a
@@ -395,7 +408,7 @@ function buildFileEntry(f) {
 // The collapsed disclosure that holds the set-aside PDFs. Its header shows the
 // count; expanding it lists the hidden PDFs (each with a Show button) so they
 // can be restored, then collapses away again.
-function buildHiddenSection(hiddenFiles) {
+function buildHiddenSection(hiddenFiles, counts) {
   const wrap = document.createElement('div');
   wrap.className = 'hidden-section';
   const toggle = document.createElement('button');
@@ -411,7 +424,7 @@ function buildHiddenSection(hiddenFiles) {
   });
   wrap.appendChild(toggle);
   if (hiddenSectionOpen) {
-    for (const f of hiddenFiles) wrap.appendChild(buildFileEntry(f));
+    for (const f of hiddenFiles) wrap.appendChild(buildFileEntry(f, counts));
   }
   return wrap;
 }
