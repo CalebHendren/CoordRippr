@@ -5,6 +5,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PROVIDERS,
+  RETIRED_MODELS,
+  dropRetiredModels,
+  parseModelList,
   buildRequest,
   extractText,
   parseResultsJson,
@@ -63,7 +66,7 @@ test('anthropic browser request adds CORS opt-in header', () => {
 });
 
 test('openai-compatible request shape (covers Chinese providers)', () => {
-  for (const id of ['openai', 'gemini', 'deepseek', 'qwen', 'kimi', 'zhipu']) {
+  for (const id of ['openai', 'gemini', 'deepseek', 'qwen', 'kimi', 'zhipu', 'openrouter']) {
     const p = PROVIDERS[id];
     const req = buildRequest({
       kind: p.kind, url: p.url, model: p.model, apiKey: 'KEY', system: 'S', user: 'U',
@@ -109,6 +112,26 @@ test('temperature constants are sane defaults', () => {
   // Low enough to pin instruction-following, above the fully-greedy floor.
   assert.ok(DEFAULT_TEMPERATURE > MIN_TEMPERATURE && DEFAULT_TEMPERATURE <= 0.5);
   assert.equal(MIN_TEMPERATURE, 0);
+});
+
+test('OpenAI itself gets max_completion_tokens; other OpenAI-shaped hosts keep max_tokens', () => {
+  const oai = JSON.parse(buildRequest({
+    kind: 'openai', url: PROVIDERS.openai.url, model: 'm', apiKey: 'k', system: 's', user: 'u', maxTokens: 777,
+  }).body);
+  assert.equal(oai.max_completion_tokens, 777);
+  assert.equal(oai.max_tokens, undefined);
+  for (const id of ['gemini', 'deepseek', 'qwen', 'kimi', 'zhipu', 'openrouter']) {
+    const body = JSON.parse(buildRequest({
+      kind: 'openai', url: PROVIDERS[id].url, model: 'm', apiKey: 'k', system: 's', user: 'u', maxTokens: 777,
+    }).body);
+    assert.equal(body.max_tokens, 777, id);
+    assert.equal(body.max_completion_tokens, undefined, id);
+  }
+  // Only the real host counts — not a lookalike or a path mentioning it.
+  const fake = JSON.parse(buildRequest({
+    kind: 'openai', url: 'https://proxy.example/api.openai.com/v1', model: 'm', apiKey: 'k', system: 's', user: 'u',
+  }).body);
+  assert.ok(fake.max_tokens > 0);
 });
 
 test('custom endpoint without key omits auth header', () => {
@@ -930,4 +953,45 @@ test('every provider offers models and a usable default', () => {
     assert.ok(p.keyUrl.startsWith('https://'), `${id} needs a key page to link to`);
     assert.equal(new Set(p.models).size, p.models.length, `${id} lists a model twice`);
   }
+});
+
+test('no current preset is a retired model', () => {
+  for (const [id, p] of Object.entries(PROVIDERS)) {
+    for (const m of p.models) assert.ok(!RETIRED_MODELS.has(m), `${id} still offers retired "${m}"`);
+  }
+});
+
+test('dropRetiredModels forgets retired choices and keeps the rest', () => {
+  const kept = dropRetiredModels({
+    deepseek: 'deepseek-reasoner', kimi: 'kimi-k2.5', anthropic: 'claude-sonnet-5', custom: 'local-llama',
+  });
+  assert.deepEqual(kept, { anthropic: 'claude-sonnet-5', custom: 'local-llama' });
+  assert.deepEqual(dropRetiredModels(undefined), {});
+});
+
+test('OpenRouter is wired for any model', () => {
+  const p = PROVIDERS.openrouter;
+  assert.equal(p.kind, 'openai');
+  assert.ok(p.modelsUrl.startsWith('https://openrouter.ai/'));
+  // OpenRouter IDs are author/slug.
+  for (const m of p.models) assert.match(m, /^[\w.-]+\/[\w.:-]+$/, m);
+});
+
+test('parseModelList reads an OpenRouter-style catalog', () => {
+  const ids = parseModelList(JSON.stringify({
+    data: [
+      { id: 'z-ai/glm-5.3', architecture: { output_modalities: ['text'] } },
+      { id: 'anthropic/claude-sonnet-5.5' }, // no architecture: assume text
+      { id: 'google/some-image-model', architecture: { output_modalities: ['image'] } },
+      { id: 'anthropic/claude-sonnet-5.5' }, // duplicate
+      { id: '' }, null, { name: 'no id' },
+    ],
+  }));
+  assert.deepEqual(ids, ['anthropic/claude-sonnet-5.5', 'z-ai/glm-5.3']);
+});
+
+test('parseModelList rejects errors and non-lists', () => {
+  assert.throws(() => parseModelList('<html>'), /not JSON/);
+  assert.throws(() => parseModelList(JSON.stringify({ error: { message: 'nope' } })), /nope/);
+  assert.throws(() => parseModelList(JSON.stringify({ models: [] })), /no model list/);
 });

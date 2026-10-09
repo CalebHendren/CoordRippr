@@ -150,7 +150,9 @@
         </label>
         <label>Model
           <select id="llm-model-select"></select>
-          <input id="llm-model" type="text" spellcheck="false" placeholder="Type a model ID" hidden />
+          <input id="llm-model" type="text" spellcheck="false" placeholder="Type a model ID" list="llm-model-list" hidden />
+          <datalist id="llm-model-list"></datalist>
+          <button type="button" id="llm-models-load" class="linkish key-link hidden" title="Fetch every model this provider serves and list them here (no API key needed)"></button>
         </label>
         <label class="wide">API key <span class="muted">(stored unencrypted in this app's local data; sent only to the provider)</span>
           <input id="llm-key" type="password" spellcheck="false" autocomplete="off" />
@@ -230,7 +232,9 @@
             </label>
             <label>Retry model
               <select id="llm-retry-model-select"></select>
-              <input id="llm-retry-model" type="text" spellcheck="false" placeholder="Type a model ID" hidden />
+              <input id="llm-retry-model" type="text" spellcheck="false" placeholder="Type a model ID" list="llm-retry-model-list" hidden />
+              <datalist id="llm-retry-model-list"></datalist>
+              <button type="button" id="llm-retry-models-load" class="linkish key-link hidden" title="Fetch every model this provider serves and list them here (no API key needed)"></button>
             </label>
             <label class="wide">Retry endpoint URL
               <input id="llm-retry-url" type="text" spellcheck="false" />

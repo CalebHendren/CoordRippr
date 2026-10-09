@@ -422,6 +422,10 @@ dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 8px 0 
 }
 .retry-config label { display: flex; flex-direction: column; gap: 3px; }
 .retry-config label.wide { grid-column: 1 / -1; }
+/* These labels lay out as a row (the fieldset rule wins); wrap so the
+   "Load all models" link sits on its own line under the dropdown. */
+.retry-config label { flex-wrap: wrap; }
+#llm-retry-models-load { flex-basis: 100%; }
 .retry-config label.retry-secondkey { flex-direction: row; align-items: center; gap: 6px; color: var(--muted); }
 .retry-config input[type="text"], .retry-config input[type="password"], .retry-config select {
   background: var(--bg); color: var(--text);
