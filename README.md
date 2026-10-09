@@ -139,11 +139,20 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   extracted coordinates and to populate the data columns from the surrounding
   text:
   - Providers: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek, Qwen
-    (Alibaba), Kimi (Moonshot), GLM (Zhipu), or any OpenAI-compatible endpoint.
-    The API key is stored locally and sent only to the selected provider. A
-    **Get an API key** link opens the provider's key page.
-  - Per-provider model dropdown, plus a **Custom…** option for an arbitrary
-    model ID.
+    (Alibaba), Kimi (Moonshot), GLM (Zhipu), **OpenRouter**, or any
+    OpenAI-compatible endpoint. The API key is stored locally and sent only to
+    the selected provider. A **Get an API key** link opens the provider's key
+    page.
+  - Per-provider model dropdown listing each provider's current models (as of
+    October 2026), plus a **Custom…** option for an arbitrary model ID. A saved
+    choice of a model the provider has since retired falls back to that
+    provider's current default.
+  - **OpenRouter — any model with one key.** Pick *OpenRouter (any model)* and
+    choose from the preset flagships, or press **Load all OpenRouter models**
+    to fetch OpenRouter's full live catalog (no key needed for the list). The
+    dropdown then lists every text model grouped by author, and **Custom…**
+    autocompletes from it; the list is remembered until you refresh it. Works
+    for the second model too.
   - **Genus / Species extraction** — explicit toggles that fill columns 1–2 from
     the text near each coordinate. Both are constrained to a single word
     (enforced in the prompt and again on the result), so `"Panthera leo"`
@@ -275,8 +284,8 @@ Actions". Browser-build caveats:
 - Folder picking uses the File System Access API (Chrome/Edge only); other
   browsers fall back to a folder-upload prompt. Drag-and-drop works everywhere.
 - LLM Assist calls the provider directly from the page, which some providers
-  restrict via CORS. Anthropic, OpenAI, and Gemini work; some others may only
-  work from the desktop app.
+  restrict via CORS. Anthropic, OpenAI, Gemini, and OpenRouter work; some
+  others may only work from the desktop app.
 
 ## Usage
 

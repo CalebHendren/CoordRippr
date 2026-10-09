@@ -9,6 +9,7 @@ import {
 import { buildPageText, rectsForRange } from './pdftext.js';
 import {
   PROVIDERS, buildRequest, extractText, parseResultsJson, normalizeResult,
+  dropRetiredModels, parseModelList,
   buildPrompt, oneWord, chunkWork, chunkPerPage, runPool, runBatched,
   DEFAULT_CONCURRENCY, MAX_CONCURRENCY, DEFAULT_BATCH_DELAY, MAX_BATCH_DELAY_MS,
   DEFAULT_TEMPERATURE, MIN_TEMPERATURE, MAX_TEMPERATURE,
@@ -2066,6 +2067,13 @@ function normalizeLlmPrefs(p) {
   out.retryModels = out.retryModels || {};
   out.retryUrls = out.retryUrls || {};
   out.retryKeys = out.retryKeys || {};
+  // A saved choice of a model the provider has since retired would only fail;
+  // forget it so the provider's current default is used instead.
+  out.models = dropRetiredModels(out.models);
+  out.retryModels = dropRetiredModels(out.retryModels);
+  // Full model catalogs loaded from a provider's `modelsUrl` (OpenRouter),
+  // keyed by provider id, so the dropdown keeps offering them after a restart.
+  out.modelLists = out.modelLists || {};
   // Anchoring is on unless the user turned it off: it is what stops the model
   // attaching the wrong paragraph to a row. Defaulted here as well as in the
   // markup so a prefs blob written before the feature behaves like a fresh one.
@@ -2106,7 +2114,8 @@ function syncLlmProviderFields() {
   const p = PROVIDERS[id];
   const model = prefs.models[id] ?? p.model;
   $('#llm-model').value = model;
-  fillModelSelect($('#llm-model-select'), $('#llm-model'), p, model);
+  fillModelSelect($('#llm-model-select'), $('#llm-model'), id, model);
+  setModelsLoadButton($('#llm-models-load'), id);
   $('#llm-url').value = prefs.urls[id] ?? p.url;
   $('#llm-key').value = prefs.keys[id] ?? '';
   $('#llm-key').placeholder = p.keyHint || '';
@@ -2115,16 +2124,77 @@ function syncLlmProviderFields() {
   syncRetryFields();
 }
 
-// Fill a model dropdown from the provider's presets plus "Custom…". Picks the
-// current model if it's a preset, else Custom + reveals the free-text field.
-function fillModelSelect(sel, input, p, model) {
-  const models = p.models || [];
+// Fill a model dropdown from the provider's presets — or, once loaded, its full
+// catalog grouped by author — plus "Custom…". Picks the current model if it's
+// listed, else Custom + reveals the free-text field. The free-text field also
+// autocompletes from the loaded catalog.
+function fillModelSelect(sel, input, id, model) {
+  const catalog = llmPrefs().modelLists[id];
+  const models = catalog || PROVIDERS[id].models || [];
   const known = models.includes(model);
-  sel.innerHTML =
-    models.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('') +
-    `<option value="${CUSTOM_MODEL_OPT}">Custom…</option>`;
+  const opt = (m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`;
+  let options;
+  if (catalog) {
+    // `author/slug` IDs: one <optgroup> per author keeps a long list scannable.
+    const groups = new Map();
+    for (const m of catalog) {
+      const author = m.includes('/') ? m.slice(0, m.indexOf('/')) : 'other';
+      if (!groups.has(author)) groups.set(author, []);
+      groups.get(author).push(m);
+    }
+    options = [...groups]
+      .map(([author, ms]) => `<optgroup label="${escapeHtml(author)}">${ms.map(opt).join('')}</optgroup>`)
+      .join('');
+  } else {
+    options = models.map(opt).join('');
+  }
+  sel.innerHTML = options + `<option value="${CUSTOM_MODEL_OPT}">Custom…</option>`;
   sel.value = known ? model : CUSTOM_MODEL_OPT;
   input.hidden = sel.value !== CUSTOM_MODEL_OPT;
+  const list = document.getElementById(input.getAttribute('list'));
+  if (list) list.innerHTML = catalog ? catalog.map(opt).join('') : '';
+}
+
+// The "Load all models" link appears only for providers with a public model
+// catalog (OpenRouter); once loaded it offers a refresh and shows the count.
+function setModelsLoadButton(btn, id) {
+  const p = PROVIDERS[id];
+  btn.classList.toggle('hidden', !p.modelsUrl);
+  btn.dataset.provider = id;
+  const catalog = llmPrefs().modelLists[id];
+  btn.textContent = catalog
+    ? `Refresh model list (${catalog.length} models)`
+    : `Load all ${p.label.replace(/\s*\(.*\)$/, '')} models`;
+}
+
+// Fetch a provider's full model catalog, remember it, and refill whichever
+// dropdowns (primary and/or second model) show that provider — keeping the
+// model each one currently has selected.
+async function loadModelCatalog(id) {
+  const p = PROVIDERS[id];
+  if (!p.modelsUrl) return;
+  llmStatus(`Loading the ${p.label} model list…`);
+  try {
+    const res = await api.netFetch({ url: p.modelsUrl, method: 'GET', headers: { accept: 'application/json' } });
+    if (res.error) throw new Error(res.error);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(res.text || '').slice(0, 200)}`);
+    const ids = parseModelList(res.text);
+    if (ids.length === 0) throw new Error('the provider returned an empty model list');
+    const prefs = llmPrefs();
+    prefs.modelLists[id] = ids;
+    saveLlmPrefs(prefs);
+    if ($('#llm-provider').value === id) {
+      fillModelSelect($('#llm-model-select'), $('#llm-model'), id, $('#llm-model').value.trim());
+      setModelsLoadButton($('#llm-models-load'), id);
+    }
+    if ($('#llm-retry-provider').value === id) {
+      fillModelSelect($('#llm-retry-model-select'), $('#llm-retry-model'), id, $('#llm-retry-model').value.trim());
+      setModelsLoadButton($('#llm-retry-models-load'), id);
+    }
+    llmStatus(`Loaded ${ids.length} models from ${p.label}.`);
+  } catch (err) {
+    llmStatus(`Could not load the ${p.label} model list: ${err && err.message ? err.message : err}`);
+  }
 }
 
 // The free-text model field is only shown when "Custom…" is picked; otherwise
@@ -2167,7 +2237,8 @@ function syncRetryFields() {
   const p = PROVIDERS[rid];
   const model = prefs.retryModels[rid] ?? p.model;
   $('#llm-retry-model').value = model;
-  fillModelSelect($('#llm-retry-model-select'), $('#llm-retry-model'), p, model);
+  fillModelSelect($('#llm-retry-model-select'), $('#llm-retry-model'), rid, model);
+  setModelsLoadButton($('#llm-retry-models-load'), rid);
   $('#llm-retry-url').value = prefs.retryUrls[rid] ?? p.url;
 
   const sameProvider = rid === primaryId;
@@ -2265,6 +2336,9 @@ function initLlmDialog() {
   $('#llm-retry-provider').addEventListener('change', syncRetryFields);
   $('#llm-retry-secondkey').addEventListener('change', syncRetryFields);
   $('#llm-retry-model-select').addEventListener('change', (e) => onModelSelectChange(e.currentTarget, $('#llm-retry-model')));
+  for (const btn of [$('#llm-models-load'), $('#llm-retry-models-load')]) {
+    btn.addEventListener('click', (e) => loadModelCatalog(e.currentTarget.dataset.provider));
+  }
   $('#llm-retry-key-link').addEventListener('click', (e) => {
     const url = e.currentTarget.dataset.url;
     if (url) api.openExternal(url);

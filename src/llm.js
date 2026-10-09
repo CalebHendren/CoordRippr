@@ -12,15 +12,17 @@
 // `model` is the default (one of `models`); "Custom…" lets users type any ID.
 // Line-ups rotate constantly and a stale ID announces itself as a 404 — when a
 // provider ships something new, add it here; "Custom…" covers the gap in the
-// meantime. Last refreshed July 2026.
+// meantime. Last refreshed October 2026.
 // `keyUrl`/`keyName` point at the provider's API-key page (linked in the UI).
+// `modelsUrl` (OpenRouter) is a public catalog endpoint the dialog can load to
+// offer every model the provider serves instead of the curated list.
 export const PROVIDERS = {
   anthropic: {
     label: 'Anthropic (Claude)',
     kind: 'anthropic',
     url: 'https://api.anthropic.com/v1/messages',
-    model: 'claude-sonnet-5',
-    models: ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5', 'claude-fable-5'],
+    model: 'claude-sonnet-5-5',
+    models: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
     keyHint: 'sk-ant-…',
     keyUrl: 'https://console.anthropic.com/settings/keys',
     keyName: 'Anthropic Console',
@@ -29,8 +31,8 @@ export const PROVIDERS = {
     label: 'OpenAI (GPT)',
     kind: 'openai',
     url: 'https://api.openai.com/v1/chat/completions',
-    model: 'gpt-5.1',
-    models: ['gpt-5.1', 'gpt-5.1-mini', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1'],
+    model: 'gpt-6.1-sol',
+    models: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'],
     keyHint: 'sk-…',
     keyUrl: 'https://platform.openai.com/api-keys',
     keyName: 'OpenAI Platform',
@@ -39,8 +41,8 @@ export const PROVIDERS = {
     label: 'Google (Gemini)',
     kind: 'openai',
     url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-    model: 'gemini-3-pro',
-    models: ['gemini-3-pro', 'gemini-3-flash', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-flash-latest'],
+    model: 'gemini-3.8-flash',
+    models: ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3.5-flash-lite', 'gemini-flash-latest', 'gemini-pro-latest'],
     keyHint: 'AIza…',
     keyUrl: 'https://aistudio.google.com/app/apikey',
     keyName: 'Google AI Studio',
@@ -49,8 +51,8 @@ export const PROVIDERS = {
     label: 'DeepSeek',
     kind: 'openai',
     url: 'https://api.deepseek.com/chat/completions',
-    model: 'deepseek-v4-flash',
-    models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner'],
+    model: 'deepseek-flash',
+    models: ['deepseek-flash', 'deepseek-v4-pro'],
     keyHint: 'sk-…',
     keyUrl: 'https://platform.deepseek.com/api_keys',
     keyName: 'DeepSeek Platform',
@@ -59,8 +61,8 @@ export const PROVIDERS = {
     label: 'Qwen (Alibaba DashScope)',
     kind: 'openai',
     url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
-    model: 'qwen3-max',
-    models: ['qwen3-max', 'qwen-max', 'qwen-plus', 'qwen-flash', 'qwen-turbo'],
+    model: 'qwen3.8-max',
+    models: ['qwen3.8-max', 'qwen3.7-plus', 'qwen3.8-flash'],
     keyHint: 'sk-…',
     keyUrl: 'https://dashscope.console.aliyun.com/apiKey',
     keyName: 'Alibaba Cloud DashScope',
@@ -70,7 +72,7 @@ export const PROVIDERS = {
     kind: 'openai',
     url: 'https://api.moonshot.cn/v1/chat/completions',
     model: 'kimi-k3',
-    models: ['kimi-k3', 'kimi-k3-turbo', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2.7-code'],
+    models: ['kimi-k3', 'kimi-k2.6', 'kimi-k2.7-code'],
     keyHint: 'sk-…',
     keyUrl: 'https://platform.moonshot.cn/console/api-keys',
     keyName: 'Moonshot Platform',
@@ -79,11 +81,37 @@ export const PROVIDERS = {
     label: 'GLM (Zhipu / BigModel)',
     kind: 'openai',
     url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
-    model: 'glm-4.7',
-    models: ['glm-4.7', 'glm-4.6', 'glm-4.5-air', 'glm-4-flash'],
+    model: 'glm-5.3',
+    models: ['glm-5.3', 'glm-5.3-flash'],
     keyHint: '…',
     keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
     keyName: 'Zhipu BigModel',
+  },
+  // One key, every model: OpenRouter speaks the OpenAI shape and routes to
+  // hundreds of models by `author/slug`. The presets are a starting point;
+  // "Load all models" pulls the live catalog from `modelsUrl`.
+  openrouter: {
+    label: 'OpenRouter (any model)',
+    kind: 'openai',
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    modelsUrl: 'https://openrouter.ai/api/v1/models',
+    model: 'anthropic/claude-sonnet-5.5',
+    models: [
+      'anthropic/claude-sonnet-5.5',
+      'anthropic/claude-opus-5.5',
+      'openai/gpt-6.1-sol',
+      'openai/gpt-6-astra',
+      'google/gemini-3.8-flash',
+      'google/gemini-3.1-pro-preview',
+      'deepseek/deepseek-v4-pro',
+      'qwen/qwen3.8-max',
+      'moonshotai/kimi-k3',
+      'z-ai/glm-5.3',
+      'openrouter/auto',
+    ],
+    keyHint: 'sk-or-…',
+    keyUrl: 'https://openrouter.ai/settings/keys',
+    keyName: 'OpenRouter',
   },
   custom: {
     label: 'Custom (OpenAI-compatible)',
@@ -96,6 +124,55 @@ export const PROVIDERS = {
     keyName: '',
   },
 };
+
+// Former presets the provider has since retired or deprecated (or that only
+// ever existed under a since-shut-down preview name). A saved choice of one of
+// these is dropped when the prefs load, so the provider's current default
+// applies instead of a request that would fail. Older models that are still
+// served simply left the dropdown; a saved choice of one is kept.
+export const RETIRED_MODELS = new Set([
+  'gpt-4.1',
+  'gemini-3-pro', 'gemini-3-flash',
+  'deepseek-reasoner', 'deepseek-chat', 'deepseek-v4-flash',
+  'qwen-turbo',
+  'kimi-k2.5', 'kimi-k3-turbo',
+]);
+
+/** Copy of a provider→model map without entries naming a retired model. */
+export function dropRetiredModels(map) {
+  const out = {};
+  for (const [id, model] of Object.entries(map || {})) {
+    if (!RETIRED_MODELS.has(model)) out[id] = model;
+  }
+  return out;
+}
+
+/**
+ * Model IDs from a provider's model-list response (OpenRouter's `/models`, or
+ * any OpenAI-style `{ data: [{ id }] }`). Models that cannot produce text
+ * (image/audio generators) are skipped. Sorted, de-duplicated. Throws on an
+ * API error or a body that is not a model list.
+ */
+export function parseModelList(responseText) {
+  let data;
+  try {
+    data = JSON.parse(responseText);
+  } catch {
+    throw new Error(`Model list is not JSON: ${String(responseText).slice(0, 200)}`);
+  }
+  if (data && data.error) {
+    throw new Error(data.error.message || JSON.stringify(data.error).slice(0, 200));
+  }
+  if (!data || !Array.isArray(data.data)) throw new Error('Response contains no model list');
+  const ids = new Set();
+  for (const m of data.data) {
+    if (!m || typeof m.id !== 'string' || !m.id.trim()) continue;
+    const out = m.architecture?.output_modalities;
+    if (Array.isArray(out) && !out.includes('text')) continue;
+    ids.add(m.id.trim());
+  }
+  return [...ids].sort((a, b) => a.localeCompare(b));
+}
 
 // ---------------------------------------------------------------------------
 // Request / response wire formats
@@ -149,19 +226,31 @@ export function buildRequest({ kind, url, model, apiKey, system, user, maxTokens
   }
   const headers = { 'content-type': 'application/json' };
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  // OpenAI's own API rejects `max_tokens` on its reasoning models (all of
+  // GPT-5 and later) and wants `max_completion_tokens`; every other
+  // OpenAI-compatible provider, OpenRouter included, still takes `max_tokens`.
+  const tokenField = isOpenAiHost(url) ? 'max_completion_tokens' : 'max_tokens';
   return {
     url,
     method: 'POST',
     headers,
     body: JSON.stringify(withTemp({
       model,
-      max_tokens: maxTokens,
+      [tokenField]: maxTokens,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
     })),
   };
+}
+
+function isOpenAiHost(url) {
+  try {
+    return new URL(url).hostname.toLowerCase() === 'api.openai.com';
+  } catch {
+    return false;
+  }
 }
 
 /** Pull the assistant's text out of a raw response body. Throws on API errors. */
