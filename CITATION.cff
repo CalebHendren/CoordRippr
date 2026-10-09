@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use CoordRippr, please cite it as below."
+type: software
+title: CoordRippr
+abstract: >-
+  Desktop and browser application that scans PDFs, including two-column
+  journal articles, for latitude/longitude coordinates in decimal or DMS
+  form, highlights them on the page, and exports a cleaned CSV.
+authors:
+  - family-names: Hendren
+    given-names: Caleb
+    affiliation: Chattanooga State Community College
+repository-code: "https://github.com/CalebHendren/CoordRippr"
+url: "https://calebhendren.github.io/CoordRippr"
+license: MIT
+keywords:
+  - coordinates
+  - georeferencing
+  - PDF
+  - text extraction
+  - biodiversity data
+  - taxonomy
