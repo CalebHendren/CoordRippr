@@ -7,3 +7,7 @@ Thumbs.db
 
 # Local scratch PDFs used for testing against real documents
 Xantho/
+
+# Claude Code local config
+.claude/
+CLAUDE.md
