@@ -17,7 +17,7 @@ import {
   DEFAULT_RENAME_SPEC, RENAME_PAGE_COUNT, RENAME_CHAR_BUDGET,
 } from './llm.js';
 import { buildImagePdf } from './pdfout.js';
-import { RELEASES_API, RELEASES_PAGE, KOFI_URL, isNewer, isDue } from './updates.js';
+import { RELEASES_API, RELEASES_PAGE, KOFI_URL, KOFI_HIDDEN_KEY, isKofiHidden, isNewer, isDue } from './updates.js';
 import {
   packState, unpackState, storage, migrateIdbToFiles, getSetting, setSetting,
 } from './persist.js';
@@ -3895,6 +3895,31 @@ async function initProjects() {
 
 $('#btn-kofi').addEventListener('click', () => api.openExternal(KOFI_URL));
 
+// The × beside the button hides it for good (stored in the settings store, so
+// it holds across restarts in the app and the browser build). The version label
+// then becomes the way back.
+function showKofi(visible) {
+  $('#kofi-group').classList.toggle('hidden', !visible);
+  const ver = $('#app-version');
+  ver.classList.toggle('restorable', !visible);
+  ver.title = visible ? '' : 'Click to show the Ko-fi button again';
+}
+
+async function initKofi() {
+  showKofi(!isKofiHidden(await getSetting(KOFI_HIDDEN_KEY, false)));
+  $('#btn-kofi-hide').addEventListener('click', () => {
+    showKofi(false);
+    setSetting(KOFI_HIDDEN_KEY, true);
+    setStatus('Ko-fi button hidden. Click the version number in the corner to bring it back.');
+  });
+  $('#app-version').addEventListener('click', () => {
+    if (!$('#kofi-group').classList.contains('hidden')) return;
+    showKofi(true);
+    setSetting(KOFI_HIDDEN_KEY, false);
+    setStatus('Ko-fi button restored.');
+  });
+}
+
 const UPDATE_TS_KEY = 'coordrippr.lastUpdateCheck';
 let appVersion = null;
 
@@ -3957,6 +3982,7 @@ async function initVersionAndUpdates() {
 initLlmPrefs();
 initTheme();
 initDataDir();
+initKofi();
 initVersionAndUpdates();
 renderTable();
 syncControls();
