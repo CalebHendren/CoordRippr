@@ -6,6 +6,13 @@ export const RELEASES_API =
 export const RELEASES_PAGE =
   'https://github.com/CalebHendren/CoordRippr/releases/latest';
 export const KOFI_URL = 'https://ko-fi.com/calebhendren';
+/** Key in the app settings store; true once the user has hidden the Ko-fi button. */
+export const KOFI_HIDDEN_KEY = 'kofiHidden';
+
+/** Only an explicit `true` hides the button; a missing or garbled value shows it. */
+export function isKofiHidden(value) {
+  return value === true;
+}
 
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 

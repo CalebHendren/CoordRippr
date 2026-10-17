@@ -2,7 +2,7 @@
 // unless you changed updates.js. Prereq: `npm install`. Run: `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseVersion, isNewer, isDue, CHECK_INTERVAL_MS } from '../src/updates.js';
+import { parseVersion, isNewer, isDue, isKofiHidden, KOFI_HIDDEN_KEY, CHECK_INTERVAL_MS } from '../src/updates.js';
 
 test('parseVersion', () => {
   assert.deepEqual(parseVersion('v1.2.3'), [1, 2, 3]);
@@ -28,4 +28,14 @@ test('isDue', () => {
   assert.equal(isDue('not a number', now), true);
   assert.equal(isDue(now - CHECK_INTERVAL_MS - 1, now), true);
   assert.equal(isDue(now - 1000, now), false);
+});
+
+test('isKofiHidden only hides on an explicit true', () => {
+  assert.equal(KOFI_HIDDEN_KEY, 'kofiHidden');
+  assert.equal(isKofiHidden(true), true);
+  assert.equal(isKofiHidden(false), false);
+  assert.equal(isKofiHidden(undefined), false);
+  assert.equal(isKofiHidden(null), false);
+  assert.equal(isKofiHidden('true'), false);
+  assert.equal(isKofiHidden(1), false);
 });
