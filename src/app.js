@@ -7,6 +7,8 @@ import {
   DEFAULT_INTENSITY, INTENSITY_LABELS, MAX_INTENSITY,
 } from './coords.js';
 import { buildPageText, rectsForRange } from './pdftext.js';
+import { hasTextLayer, wantsOcr, ocrTextContent, bodyStart } from './ocr.js';
+import { ocrPage, stopOcrEngine } from './ocrengine.js';
 import {
   PROVIDERS, buildRequest, extractText, parseResultsJson, normalizeResult,
   dropRetiredModels, parseModelList,
@@ -45,7 +47,7 @@ const PDF_OPEN_OPTS = {
 // ---------------------------------------------------------------------------
 
 const state = {
-  files: [], // {id, name, path, doc, error, numPages, pages:[{num,w,h,proxy,dets:[]}]}
+  files: [], // {id, name, path, doc, error, numPages, ocrMode, pages:[{num,w,h,proxy,dets:[],noText,ocr}]}
   dets: new Map(), // detId -> {id, fileId, pageNum, rects, rowId, half, raw, span}
   rows: [], // {id, cells:[…], notes, lat, lon, latRaw, lonRaw, src:{fileId,pageNum,latDet,lonDet,extraDets?}}
   cols: ['Genus', 'Species'], // data column headers (2 by default, user can add more)
@@ -133,6 +135,7 @@ async function loadFiles(specs) {
       intensity: null, // per-PDF net override; null = follow the global net
       hidden: false, // user can set a PDF aside as "not needed"
       byteHash: null, textHash: null, // content identity — see "Duplicate PDFs"
+      ocrMode: 'auto', // 'auto' | 'off' | 'force' — see "OCR"
     };
     state.files.push(file);
     try {
@@ -154,9 +157,11 @@ async function loadFiles(specs) {
       for (let p = 1; p <= file.numPages; p++) {
         const page = await file.doc.getPage(p);
         const vp = page.getViewport({ scale: 1 });
-        const pageRec = { num: p, w: vp.width, h: vp.height, proxy: page, dets: [] };
+        const pageRec = { num: p, w: vp.width, h: vp.height, proxy: page, dets: [], noText: false, ocr: null };
         file.pages.push(pageRec);
         const tc = await page.getTextContent();
+        // Scanned pages are read by OCR in the background once loading is done.
+        pageRec.noText = !hasTextLayer(tc);
         const { text, spans } = buildPageText(tc);
         pageTexts.push(text);
         const ctx = { pageRec, text, spans };
@@ -178,6 +183,7 @@ async function loadFiles(specs) {
   }
   renderAll();
   persistSoon();
+  scheduleOcr();
   // Passive: say so, hide nothing. The review dialog is where anything happens.
   const dupes = countDuplicates(findDuplicateFiles(state.files.filter((f) => !f.error)));
   if (dupes) {
@@ -195,7 +201,7 @@ function scanPage(file, ctx, prevCtx, reuse = null) {
     addDetectedRow(file, ctx, pair, reuse);
   }
   if (prevCtx) {
-    for (const pair of extractCrossPage(prevCtx.text, ctx.text, net)) {
+    for (const pair of extractCrossPage(prevCtx.text, ctx.text, net, undefined, ctx.bodyStart || 0)) {
       addCrossPageRow(file, prevCtx, ctx, pair, reuse);
     }
   }
@@ -235,7 +241,7 @@ function addDetectedRow(file, ctx, pair, reuse = null) {
     const tok = pair[half];
     const det = {
       id: uid('d'), fileId: file.id, pageNum: pageRec.num,
-      rects: rectsForRange(ctx.spans, tok.start, tok.end),
+      rects: pdfRects(ctx, rectsForRange(ctx.spans, tok.start, tok.end)),
       rowId: row.id, half, raw: tok.raw,
       span: [tok.start, tok.end],
     };
@@ -309,7 +315,7 @@ function addCrossPageRow(file, prevCtx, curCtx, pair, reuse = null) {
       const ctx = ctxFor(seg);
       const det = {
         id: uid('d'), fileId: file.id, pageNum: ctx.pageRec.num,
-        rects: rectsForRange(ctx.spans, seg.start, seg.end),
+        rects: pdfRects(ctx, rectsForRange(ctx.spans, seg.start, seg.end)),
         rowId: row.id, half, raw: tok.raw,
         span: [seg.start, seg.end],
       };
@@ -344,6 +350,212 @@ function removeRows(ids, { suppress = true } = {}) {
   state.rows = state.rows.filter((r) => !ids.has(r.id));
   for (const id of ids) state.selected.delete(id);
   if (!state.rows.some((r) => r.id === state.activeRow)) state.activeRow = null;
+}
+
+// ---------------------------------------------------------------------------
+// OCR
+//
+// A page without a text layer (a scan) is rendered and read by Tesseract in
+// the background once its PDF has loaded; the words it finds stand in for the
+// text layer from then on (pageText), so detection, re-scans, LLM runs and
+// marking by hand all work on them. Results are kept in the project snapshot,
+// so a restore never reads a page twice. One page at a time, a few seconds
+// each; progress shows in the footer, where it can be stopped.
+// ---------------------------------------------------------------------------
+
+let ocrEnabled = true; // app-wide switch (toolbar "OCR scans"), in the settings store
+let ocrGen = 0; // bumped to abandon OCR in flight: project switch, Stop, switch off
+let ocrLoop = null; // the running queue, if any
+let ocrAgain = false; // more work was queued while the loop was finishing
+let ocrPaused = false; // the user pressed Stop; cleared by the next thing that asks for OCR
+
+const fileOcrMode = (file) => file.ocrMode || 'auto';
+const pageWantsOcr = (file, pageRec) => wantsOcr(pageRec.noText, fileOcrMode(file), ocrEnabled);
+const pageUsesOcr = (file, pageRec) => !!pageRec.ocr && pageWantsOcr(file, pageRec);
+
+/**
+ * One page's searchable text: {pageRec, text, spans, bodyStart, toPdf}. OCR'd
+ * words when the page has them, else pdf.js's text layer. OCR word boxes are in
+ * the page as displayed (rotation applied); `toPdf` maps them to PDF space.
+ */
+async function pageText(file, pageRec) {
+  if (pageUsesOcr(file, pageRec)) {
+    const { text, spans } = buildPageText(ocrTextContent(pageRec.ocr));
+    return { pageRec, text, spans, bodyStart: bodyStart(spans), toPdf: displayToPdf(pageRec.proxy) };
+  }
+  const { text, spans } = buildPageText(await pageRec.proxy.getTextContent());
+  return { pageRec, text, spans, bodyStart: 0, toPdf: null };
+}
+
+// Display rectangle (scale 1, y up from the bottom edge) -> PDF user space.
+function displayToPdf(proxy) {
+  const vp = proxy.getViewport({ scale: 1 });
+  return ([x1, y1, x2, y2]) => {
+    const [a, b] = vp.convertToPdfPoint(x1, vp.height - y1);
+    const [c, d] = vp.convertToPdfPoint(x2, vp.height - y2);
+    return [Math.min(a, c), Math.min(b, d), Math.max(a, c), Math.max(b, d)];
+  };
+}
+
+const pdfRects = (ctx, rects) => (ctx.toPdf ? rects.map(ctx.toPdf) : rects);
+
+// Pages still to be read, file by file. Hidden PDFs wait until shown.
+function ocrTodo() {
+  const todo = [];
+  for (const file of state.files) {
+    if (file.error || !file.doc || file.hidden) continue;
+    for (const pageRec of file.pages) {
+      if (pageRec.proxy && !pageRec.ocr && !pageRec.ocrFailed && pageWantsOcr(file, pageRec)) {
+        todo.push({ file, pageRec });
+      }
+    }
+  }
+  return todo;
+}
+
+/** Start (or keep running) the background OCR queue. */
+function scheduleOcr({ resume = true } = {}) {
+  if (resume) ocrPaused = false;
+  if (ocrPaused) return;
+  if (ocrLoop) { ocrAgain = true; return; }
+  ocrLoop = runOcrQueue()
+    .catch((err) => console.warn('CoordRippr: OCR stopped', err))
+    .finally(() => {
+      ocrLoop = null;
+      showOcrProgress(null);
+      if (ocrAgain) { ocrAgain = false; scheduleOcr({ resume: false }); }
+    });
+}
+
+/** Abandon OCR in flight (the page being read is dropped). */
+function cancelOcr() {
+  ocrGen++;
+  stopOcrEngine();
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Typing in the table: a re-scan re-renders it, so it waits for the edit to end.
+const editingTable = () => {
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest('#csv-table') && el.matches('input, textarea'));
+};
+
+async function runOcrQueue() {
+  const gen = ocrGen;
+  const live = () => gen === ocrGen && !ocrPaused;
+  while (live()) {
+    const todo = ocrTodo();
+    if (todo.length === 0) break;
+    const file = todo[0].file;
+    const pages = todo.filter((t) => t.file === file).map((t) => t.pageRec);
+    let read = 0;
+    let failed = null;
+    for (const [i, pageRec] of pages.entries()) {
+      showOcrProgress({ file, i, n: pages.length, frac: 0 });
+      try {
+        const words = await ocrPage(pageRec.proxy, (frac) => {
+          if (live()) showOcrProgress({ file, i, n: pages.length, frac });
+        });
+        if (!live()) break;
+        pageRec.ocr = words;
+        read++;
+      } catch (err) {
+        if (!live()) break;
+        pageRec.ocrFailed = true; // not retried until the PDF's OCR setting changes
+        failed = err;
+        console.warn(`CoordRippr: OCR failed on ${file.name} p.${pageRec.num}`, err);
+      }
+    }
+    if (gen !== ocrGen) return;
+    // Pages read before a Stop still count: re-scan this PDF with them.
+    if (read) {
+      while ((state.busy || editingTable()) && gen === ocrGen) await sleep(300);
+      if (gen !== ocrGen) return;
+      await rescanAll(false, [file]);
+      const n = rowCountsByFile().get(file.id) || 0;
+      setStatus(`OCR read ${read} page${read === 1 ? '' : 's'} of ${file.name} — ${n} coordinate${n === 1 ? '' : 's'} in it.`);
+    } else {
+      renderFileList();
+    }
+    if (failed) setStatus(`OCR failed on ${file.name}: ${failed && failed.message ? failed.message : failed}`);
+  }
+  // The engine holds ~100 MB; let it go until the next scan needs it.
+  if (gen === ocrGen) stopOcrEngine();
+}
+
+function showOcrProgress(p) {
+  const el = $('#ocr-progress');
+  if (!p) { el.classList.add('hidden'); return; }
+  const pct = Math.round(p.frac * 100);
+  $('#ocr-progress-text').textContent =
+    `OCR · ${p.file.name} · page ${p.i + 1} of ${p.n}${pct ? ` (${pct}%)` : ''}`;
+  el.classList.remove('hidden');
+}
+
+$('#btn-ocr-stop').addEventListener('click', () => {
+  ocrPaused = true;
+  cancelOcr();
+  setStatus('OCR stopped. Pages read so far are kept; opening PDFs or changing a PDF’s OCR setting starts it again.');
+});
+
+$('#chk-ocr').addEventListener('change', async (e) => {
+  if (state.busy) {
+    e.target.checked = ocrEnabled;
+    setStatus('Busy — try again when scanning finishes.');
+    return;
+  }
+  ocrEnabled = e.target.checked;
+  setSetting('ocrEnabled', ocrEnabled);
+  if (!ocrEnabled) cancelOcr();
+  await rescanAll(ocrEnabled
+    ? 'OCR on — scanned pages are read in the background…'
+    : 'OCR off — scanned pages are left unread (a PDF set to “OCR all pages” still is)…');
+  scheduleOcr();
+});
+
+// Per-PDF OCR picker beside the net picker: Auto reads the pages without a
+// text layer, Off never OCRs this PDF, All pages reads every page — for a PDF
+// whose text layer is garbage (a bad OCR from the publisher, broken fonts).
+function buildFileOcrControl(file) {
+  const sel = document.createElement('select');
+  sel.className = 'file-ocr-sel';
+  sel.title =
+    'OCR for this PDF. Auto reads pages that have no text layer (scans); Off never OCRs it; ' +
+    'All pages ignores the text layer and reads every page.';
+  sel.innerHTML = [['auto', 'OCR auto'], ['off', 'OCR off'], ['force', 'OCR all pages']]
+    .map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+  sel.value = fileOcrMode(file);
+  sel.addEventListener('click', (e) => e.stopPropagation());
+  sel.addEventListener('change', (e) => {
+    e.stopPropagation();
+    onFileOcrChange(file, sel.value);
+  });
+  return sel;
+}
+
+async function onFileOcrChange(file, mode) {
+  if (mode === fileOcrMode(file)) return;
+  if (state.busy) {
+    renderFileList();
+    setStatus('Busy — try again when scanning finishes.');
+    return;
+  }
+  file.ocrMode = mode;
+  for (const pageRec of file.pages) pageRec.ocrFailed = false; // a fresh request retries
+  const what = mode === 'off' ? 'OCR off' : mode === 'force' ? 'OCR on every page' : 'OCR for scanned pages';
+  await rescanAll(`${file.name}: ${what}…`, [file]);
+  scheduleOcr();
+}
+
+// For the file list: "OCR 3/12" while pages are outstanding, "OCR" once read.
+function ocrBadge(file) {
+  const wanted = file.pages.filter((p) => pageWantsOcr(file, p));
+  if (wanted.length === 0) return '';
+  const done = wanted.filter((p) => p.ocr).length;
+  if (done === wanted.length) return ' · OCR';
+  if (wanted.some((p) => p.ocrFailed)) return ' · <span class="err">OCR failed</span>';
+  return ` · OCR ${done}/${wanted.length}`;
 }
 
 function renderAll() {
@@ -399,17 +611,24 @@ function buildFileEntry(f, counts) {
     + (f.hidden ? ' hidden-file' : '');
   const meta = f.error
     ? `<span class="err">error: ${escapeHtml(f.error)}</span>`
-    : `<span class="${nCoords ? 'count' : 'zero'}">${nCoords} coord${nCoords === 1 ? '' : 's'}</span> · ${f.numPages} p.`;
+    : `<span class="${nCoords ? 'count' : 'zero'}">${nCoords} coord${nCoords === 1 ? '' : 's'}</span> · ${f.numPages} p.${ocrBadge(f)}`;
   el.innerHTML = `<div class="fname">${escapeHtml(f.name)}</div><div class="fmeta">${meta}</div>`;
   // Controls row: the per-PDF detection-net override (visible files only, so a
   // stubborn document can get a more aggressive net than the batch) plus a
-  // Hide/Show toggle to set the PDF aside or bring it back.
+  // Hide/Show toggle to set the PDF aside or bring it back. Below it, the
+  // PDF's OCR setting.
   if (!f.error) {
     const controls = document.createElement('div');
     controls.className = 'file-controls';
     if (!f.hidden) controls.appendChild(buildFileNetControl(f));
     controls.appendChild(buildFileHideControl(f));
     el.appendChild(controls);
+    if (!f.hidden) {
+      const ocrRow = document.createElement('div');
+      ocrRow.className = 'file-controls';
+      ocrRow.appendChild(buildFileOcrControl(f));
+      el.appendChild(ocrRow);
+    }
   }
   // A visible entry becomes the viewed PDF on click; a hidden entry (shown only
   // in the expanded disclosure) is set aside, so only its Show button reacts.
@@ -490,6 +709,7 @@ function toggleFileHidden(file) {
   }
   renderAll();
   persistSoon();
+  if (!file.hidden) scheduleOcr({ resume: false });
   setStatus(file.hidden
     ? `Hid ${file.name} — its rows are excluded from the CSV. Click Show to bring it back.`
     : `Restored ${file.name}.`);
@@ -574,7 +794,7 @@ function renderPages() {
 
     const label = document.createElement('div');
     label.className = 'page-label';
-    label.textContent = `${file.name} — page ${pageRec.num}${pageRec.dets.length ? ` · ${pageRec.dets.length} hit${pageRec.dets.length === 1 ? '' : 's'}` : ''}`;
+    label.textContent = `${file.name} — page ${pageRec.num}${pageUsesOcr(file, pageRec) ? ' · OCR' : ''}${pageRec.dets.length ? ` · ${pageRec.dets.length} hit${pageRec.dets.length === 1 ? '' : 's'}` : ''}`;
     wrap.appendChild(label);
 
     const viewport = pageRec.proxy.getViewport({ scale: state.zoom });
@@ -762,23 +982,24 @@ window.addEventListener('mouseup', async () => {
   const [x2, y2] = viewport.convertToPdfPoint(Math.max(drag.startX, cur.x), Math.max(drag.startY, cur.y));
   const rect = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
 
-  const text = await textInRect(drag.pageRec, rect);
+  const text = await textInRect(drag.file, drag.pageRec, rect);
   markPending = { file: drag.file, pageRec: drag.pageRec, rect, text };
   openMarkDialog(text);
 });
 
 /** The page text whose glyph boxes fall inside a PDF-space rectangle. */
-async function textInRect(pageRec, [rx1, ry1, rx2, ry2]) {
+async function textInRect(file, pageRec, [rx1, ry1, rx2, ry2]) {
   try {
-    const tc = await pageRec.proxy.getTextContent();
-    const { spans } = buildPageText(tc);
+    const ctx = await pageText(file, pageRec);
     const parts = [];
-    for (const span of spans) {
+    for (const span of ctx.spans) {
       const it = span.item;
-      const x = it.transform[4];
-      const y = it.transform[5];
-      const w = it.width || 0;
-      const h = it.height || 8;
+      const [[x, y, x2, y2]] = pdfRects(ctx, [[
+        it.transform[4], it.transform[5],
+        it.transform[4] + (it.width || 0), it.transform[5] + (it.height || 8),
+      ]]);
+      const w = x2 - x;
+      const h = y2 - y;
       // Any overlap counts: a box drawn tightly around a coordinate rarely
       // encloses the full extent of the text item it sits in.
       if (x + w < rx1 || x > rx2 || y + h < ry1 || y > ry2) continue;
@@ -1546,11 +1767,11 @@ intensityEl.addEventListener('change', async () => {
 // override, else the global net). Rows whose detection still matches keep their
 // edits; manual rows are untouched; rows the user deleted stay deleted
 // (suppression keys). `msg` overrides the status line for a per-PDF change.
-async function rescanAll(msg = null) {
-  const scannable = state.files.filter((f) => !f.error && f.doc);
+async function rescanAll(msg = null, only = null) {
+  const scannable = state.files.filter((f) => !f.error && f.doc && (!only || only.includes(f)));
   if (scannable.length === 0) { renderTable(); persistSoon(); return; }
   state.busy = true;
-  setStatus(msg || `Re-scanning with the "${intensityName(state.intensity)}" net…`, true);
+  if (msg !== false) setStatus(msg || `Re-scanning with the "${intensityName(state.intensity)}" net…`, true);
 
   // Location keys of the current detection rows -> row, for edit reuse.
   const reuse = new Map();
@@ -1568,8 +1789,16 @@ async function rescanAll(msg = null) {
 
   // Strip the old detections of scannable files; keep manual rows and rows of
   // broken files in place (their relative order is preserved by re-adding
-  // scan results first).
-  const keptRows = state.rows.filter((r) => !detRows.has(r.id));
+  // scan results first). A re-scan of some files only puts their rows back
+  // where the first of them was, so the rest of the table keeps its order.
+  const firstOld = state.rows.findIndex((r) => detRows.has(r.id));
+  let keptRows = state.rows.filter((r) => !detRows.has(r.id));
+  let keptBefore = [];
+  if (only) {
+    const at = firstOld >= 0 ? state.rows.slice(0, firstOld).filter((r) => !detRows.has(r.id)).length : keptRows.length;
+    keptBefore = keptRows.slice(0, at);
+    keptRows = keptRows.slice(at);
+  }
   state.rows = [];
   for (const file of scannable) {
     for (const pageRec of file.pages) {
@@ -1594,14 +1823,13 @@ async function rescanAll(msg = null) {
     for (const file of scannable) {
       let prevCtx = null;
       for (const pageRec of file.pages) {
-        const tc = await pageRec.proxy.getTextContent();
-        const { text, spans } = buildPageText(tc);
-        const ctx = { pageRec, text, spans };
+        const ctx = await pageText(file, pageRec);
         scanPage(file, ctx, prevCtx, reuse);
         prevCtx = ctx;
       }
     }
   } finally {
+    state.rows.unshift(...keptBefore);
     state.rows.push(...keptRows);
     state.selected.clear();
     state.anchor = null;
@@ -1948,14 +2176,14 @@ $('#btn-export').addEventListener('click', async () => {
 
 const HL_EXPORT_SCALE = 2; // render resolution: 144 dpi keeps text readable
 
-async function renderHighlightedPage(pageRec) {
+async function renderHighlightedPage(pageRec, highlights = true) {
   const viewport = pageRec.proxy.getViewport({ scale: HL_EXPORT_SCALE });
   const canvas = document.createElement('canvas');
   canvas.width = Math.floor(viewport.width);
   canvas.height = Math.floor(viewport.height);
   const ctx = canvas.getContext('2d');
   await pageRec.proxy.render({ canvasContext: ctx, viewport }).promise;
-  for (const detId of pageRec.dets) {
+  for (const detId of highlights ? pageRec.dets : []) {
     const det = state.dets.get(detId);
     if (!det) continue;
     for (const rect of det.rects) {
@@ -2002,6 +2230,62 @@ $('#btn-save-hl').addEventListener('click', async () => {
     setStatus(saved ? `Saved ${saved}` : 'Save cancelled.');
   } catch (err) {
     setStatus(`Could not save the highlighted PDF: ${err && err.message ? err.message : err}`);
+  } finally {
+    state.busy = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Save the current PDF as a searchable copy: each page image with the OCR
+// words laid over it as invisible text, so any PDF reader can search, select
+// and copy what the scan says. Pages that kept their own text layer carry
+// that text instead.
+// ---------------------------------------------------------------------------
+
+// Words for a page's invisible text layer, in the page as displayed (points,
+// y up), in the ocr.js word-list shape.
+async function pageWordsForPdf(file, pageRec) {
+  if (pageUsesOcr(file, pageRec)) return pageRec.ocr;
+  const vp = pageRec.proxy.getViewport({ scale: 1 });
+  const tc = await pageRec.proxy.getTextContent();
+  return tc.items
+    .filter((it) => it.str && it.str.trim())
+    .map((it) => {
+      const [vx, vy] = vp.convertToViewportPoint(it.transform[4], it.transform[5]);
+      return [it.str, vx, vp.height - vy, it.width, it.height || 8];
+    });
+}
+
+$('#btn-save-ocr').addEventListener('click', async () => {
+  if (state.busy) { setStatus('Busy — try again when the current job finishes.'); return; }
+  const file = state.files.find((f) => f.id === state.currentFile);
+  if (!file || file.error || !file.doc) { setStatus('Open a PDF first (the currently viewed PDF is saved).'); return; }
+  const wanted = file.pages.filter((p) => pageWantsOcr(file, p));
+  if (wanted.length === 0) {
+    setStatus(`${file.name} has no pages to OCR — it already has a text layer. Set its OCR to “OCR all pages” to read it anyway.`);
+    return;
+  }
+  if (wanted.some((p) => !p.ocr)) {
+    setStatus(`OCR has not finished reading ${file.name} yet — try again when the footer shows it is done.`);
+    return;
+  }
+  state.busy = true;
+  try {
+    const pages = [];
+    for (const pageRec of file.pages) {
+      setStatus(`Rendering ${file.name} page ${pageRec.num}/${file.pages.length}…`, true);
+      const page = await renderHighlightedPage(pageRec, false);
+      page.words = await pageWordsForPdf(file, pageRec);
+      pages.push(page);
+    }
+    setStatus('Building PDF…', true);
+    const saved = await api.savePdf({
+      defaultName: file.name.replace(/\.pdf$/i, '') + '-ocr.pdf',
+      data: buildImagePdf(pages),
+    });
+    setStatus(saved ? `Saved ${saved}` : 'Save cancelled.');
+  } catch (err) {
+    setStatus(`Could not save the OCR'd PDF: ${err && err.message ? err.message : err}`);
   } finally {
     state.busy = false;
   }
@@ -2274,6 +2558,7 @@ function initLlmDialog() {
   // so it is never restored to "off" from an old preference.
   $('#llm-verify').checked = true;
   if (prefs.anchor != null) $('#llm-anchor').checked = prefs.anchor;
+  $('#llm-scan-as').value = prefs.scanAs === 'image' ? 'image' : 'ocr';
   if (prefs.genus != null) $('#llm-genus').checked = prefs.genus;
   if (prefs.species != null) $('#llm-species').checked = prefs.species;
   if (prefs.fill != null) $('#llm-fill').checked = prefs.fill;
@@ -2485,6 +2770,8 @@ function collectLlmSettings() {
     verify: $('#llm-verify').checked,
     // Mark each row's detected span in the page text and repeat it under the row.
     anchor: $('#llm-anchor').checked,
+    // Scanned (OCR'd) pages: send the OCR text, or the page image itself.
+    scanAs: $('#llm-scan-as').value === 'image' ? 'image' : 'ocr',
     genus: $('#llm-genus').checked,
     species: $('#llm-species').checked,
     fill: $('#llm-fill').checked,
@@ -2532,6 +2819,7 @@ function collectLlmSettings() {
   prefs.extra = s.extra;
   prefs.verify = s.verify;
   prefs.anchor = s.anchor;
+  prefs.scanAs = s.scanAs;
   prefs.genus = s.genus;
   prefs.species = s.species;
   prefs.fill = s.fill;
@@ -2619,11 +2907,45 @@ function buildLlmWork({ scope, files, unsentOnly, anchor }) {
   return { work, skippedSent };
 }
 
+// Longest side of a scanned page sent to a vision model, in pixels: enough to
+// read small print, within what the providers accept without downscaling.
+const LLM_IMAGE_PX = 1600;
+
+/**
+ * One page as LLM Assist sends it: {file, page, text}, plus `image` (a JPEG
+ * of the page as base64) for a scanned page when the user chose to send scans
+ * as images. Such a page carries no text: the model reads the scan.
+ */
+async function llmPage(file, pageNum, s) {
+  const pageRec = file.pages.find((p) => p.num === pageNum);
+  if (s && s.scanAs === 'image' && pageRec && pageRec.proxy && pageUsesOcr(file, pageRec)) {
+    return { file: file.name, page: pageNum, text: '', image: await pageJpeg(pageRec, LLM_IMAGE_PX) };
+  }
+  return { file: file.name, page: pageNum, text: await pageTextFor(file, pageNum) };
+}
+
+async function pageJpeg(pageRec, longSide) {
+  const vp1 = pageRec.proxy.getViewport({ scale: 1 });
+  const viewport = pageRec.proxy.getViewport({ scale: longSide / Math.max(vp1.width, vp1.height) });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(viewport.width);
+  canvas.height = Math.round(viewport.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await pageRec.proxy.render({ canvasContext: ctx, viewport }).promise;
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.85));
+  if (!blob) throw new Error('Could not encode a page image');
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return { mime: 'image/jpeg', data: btoa(bin) };
+}
+
 async function pageTextFor(file, pageNum) {
   const pageRec = file.pages.find((p) => p.num === pageNum);
   if (!pageRec) return '';
-  const tc = await pageRec.proxy.getTextContent();
-  return buildPageText(tc).text;
+  return (await pageText(file, pageRec)).text;
 }
 
 function applyLlmResults(results, s, counts, meta) {
@@ -2687,7 +3009,7 @@ async function previewLlmPrompt() {
       const w = work[0];
       const pages = [];
       for (const num of w.pageNums) {
-        pages.push({ file: w.file.name, page: num, text: await pageTextFor(w.file, num) });
+        pages.push(await llmPage(w.file, num, s));
       }
       chunk = (perPage ? chunkPerPage(pages, w.rows) : chunkWork(pages, w.rows))[0] || null;
     }
@@ -2714,13 +3036,18 @@ async function previewLlmPrompt() {
       pages: [{ file: 'example.pdf', page: 1, text: exText }],
     };
   }
-  const { system, user } = buildPrompt({
+  const { system, user: text, images } = buildPrompt({
     rows: chunk.rows, pages: chunk.pages, cols: state.cols,
     extra: s.extra, verify: s.verify, fill: s.fill, genus: s.genus, species: s.species,
     flagDelete: s.flagDelete, notes: s.notes, notesSpec: s.notesSpec, allowPrev: allow, allowNext: allow,
     anchor: s.anchor,
   });
   $('#llm-preview-system').textContent = system;
+  const user = images.length
+    ? `${text}
+
+[+ ${images.length} scanned page image${images.length === 1 ? '' : 's'} attached after this text]`
+    : text;
   const MAX = 8000;
   $('#llm-preview-user').textContent =
     user.length > MAX ? `${user.slice(0, MAX)}\n…(truncated for preview — ${user.length - MAX} more characters)` : user;
@@ -3104,10 +3431,10 @@ $('#llm-run').addEventListener('click', async () => {
 
   // Send an already-built prompt to model `cfg`, parse the JSON row results.
   // Returns null (and records the problem) on an API error or empty parse.
-  const postPrompt = async (system, user, label, cfg) => {
+  const postPrompt = async ({ system, user, images }, label, cfg) => {
     const req = buildRequest({
       kind: cfg.kind, url: cfg.url, model: cfg.model, apiKey: cfg.key,
-      system, user, temperature: cfg.temperature, browser: IS_WEB,
+      system, user, images, temperature: cfg.temperature, browser: IS_WEB,
     });
     const res = await api.netFetch(req);
     if (res.error) throw new Error(res.error);
@@ -3131,27 +3458,27 @@ $('#llm-run').addEventListener('click', async () => {
   // One extraction request: build the full-task prompt, send, parse. `cfg`
   // chooses which model/endpoint/key to hit; the task instructions are the same.
   const sendChunk = (chunk, label, allowPrevHere, allowNextHere = false, cfg = primaryCfg) => {
-    const { system, user } = buildPrompt({
+    const prompt = buildPrompt({
       rows: chunk.rows, pages: chunk.pages, cols: state.cols,
       extra: s.extra, verify: s.verify, fill: s.fill, genus: s.genus, species: s.species,
       flagDelete: s.flagDelete, notes: s.notes, notesSpec: s.notesSpec,
       allowPrev: allowPrevHere, allowNext: allowNextHere, anchor: s.anchor,
     });
-    return postPrompt(system, user, label, cfg);
+    return postPrompt(prompt, label, cfg);
   };
 
   // One delete-confirmation request: a flag-only prompt (no verify/fill/notes)
   // so the second model does nothing but judge whether each row is a false
   // positive. Used by the "delete only when a second model agrees" option.
   const sendConfirm = (chunk, label, cfg) => {
-    const { system, user } = buildPrompt({
+    const prompt = buildPrompt({
       rows: chunk.rows, pages: chunk.pages, cols: state.cols,
       // Anchors matter most here: "is this a real coordinate" is exactly a
       // question about the anchored text, and this model's answer deletes rows.
       extra: s.extra, verify: false, fill: false, genus: false, species: false,
       flagDelete: true, notes: false, allowPrev: false, allowNext: false, anchor: s.anchor,
     });
-    return postPrompt(system, user, label, cfg);
+    return postPrompt(prompt, label, cfg);
   };
 
   const applyAndRender = (results) => {
@@ -3220,7 +3547,7 @@ $('#llm-run').addEventListener('click', async () => {
       await dispatch(list, async (g) => {
         const pages = [];
         for (let num = g.backTo; num <= g.page; num++) {
-          pages.push({ file: g.fileRec.name, page: num, text: await pageTextFor(g.fileRec, num) });
+          pages.push(await llmPage(g.fileRec, num, s));
         }
         const canGoFurther = g.backTo > 1 && pass < MAX_PREV_PASSES;
         const results = await sendChunk({ pages, rows: g.rows }, `${tag}Previous-page pass ${pass}`, canGoFurther, false, cfg);
@@ -3258,7 +3585,7 @@ $('#llm-run').addEventListener('click', async () => {
       await dispatch(list, async (g) => {
         const pages = [];
         for (let num = g.page; num <= g.forwardTo; num++) {
-          pages.push({ file: g.fileRec.name, page: num, text: await pageTextFor(g.fileRec, num) });
+          pages.push(await llmPage(g.fileRec, num, s));
         }
         const canGoFurther = g.forwardTo < g.fileRec.numPages && pass < MAX_NEXT_PASSES;
         const results = await sendChunk({ pages, rows: g.rows }, `${tag}Next-page pass ${pass}`, false, canGoFurther, cfg);
@@ -3297,7 +3624,7 @@ $('#llm-run').addEventListener('click', async () => {
       const list = [...groups.values()];
       let d = 0;
       await dispatch(list, async (g) => {
-        const pages = [{ file: g.fileRec.name, page: g.page, text: await pageTextFor(g.fileRec, g.page) }];
+        const pages = [await llmPage(g.fileRec, g.page, s)];
         const results = await sendChunk({ pages, rows: g.rows }, `${tag}Badge retry ${pass}`, false, false, cfg);
         d++;
         llmStatus(
@@ -3325,7 +3652,7 @@ $('#llm-run').addEventListener('click', async () => {
       const pages = [];
       for (const p of fileRec.pages) {
         if (s.scope !== 'all' && p.dets.length === 0) continue;
-        pages.push({ file: fileRec.name, page: p.num, text: await pageTextFor(fileRec, p.num) });
+        pages.push(await llmPage(fileRec, p.num, s));
       }
       out.push(...(perPage ? chunkPerPage(pages, rows) : chunkWork(pages, rows)));
     }
@@ -3338,7 +3665,7 @@ $('#llm-run').addEventListener('click', async () => {
     for (const w of work) {
       const pages = [];
       for (const num of w.pageNums) {
-        pages.push({ file: w.file.name, page: num, text: await pageTextFor(w.file, num) });
+        pages.push(await llmPage(w.file, num, s));
       }
       chunks.push(...(perPage ? chunkPerPage(pages, w.rows) : chunkWork(pages, w.rows)));
     }
@@ -3506,6 +3833,7 @@ async function destroyDocs() {
 }
 
 function resetState() {
+  cancelOcr();
   state.files = [];
   state.dets = new Map();
   state.rows = [];
@@ -3559,6 +3887,10 @@ async function reattachFile(file) {
     file.numPages = file.doc.numPages;
     for (const pageRec of file.pages) {
       pageRec.proxy = await file.doc.getPage(pageRec.num);
+      // Snapshots from before OCR never recorded which pages are scans.
+      if (typeof pageRec.noText !== 'boolean') {
+        pageRec.noText = !hasTextLayer(await pageRec.proxy.getTextContent());
+      }
     }
   } catch (err) {
     file.error = err && err.message ? err.message : String(err);
@@ -3595,6 +3927,7 @@ async function restoreProject(id) {
   }
   syncControls();
   renderAll();
+  scheduleOcr(); // pages still unread when the app last closed
 }
 
 async function switchProject(id) {
@@ -3855,6 +4188,8 @@ $('#btn-proj-del').addEventListener('click', async () => {
 });
 
 async function initProjects() {
+  ocrEnabled = (await getSetting('ocrEnabled', true).catch(() => true)) !== false;
+  $('#chk-ocr').checked = ocrEnabled;
   try {
     // Electron: lift anything still in IndexedDB into the file store, once.
     // Sessions used to disappear on update because a file:// renderer's

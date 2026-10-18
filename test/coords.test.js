@@ -415,6 +415,18 @@ test('single token broken by the page break maps to both pages', () => {
   assert.deepEqual(pairs[0].lat.segs.map((s) => s.page), ['prev', 'next']);
 });
 
+test('nextStart skips a running head on the next page, offsets stay page-relative', () => {
+  const prev = `The colony was located at 41°24'12"N`;
+  const head = 'Journal of Placeholder Entomology 14(3)\n';
+  const next = `${head}2°10'26"E as recorded in the field notes.`;
+  // The head's numbers sit between the halves, so without the skip: nothing.
+  assert.equal(extractCrossPage(prev, next).length, 0);
+  const pairs = extractCrossPage(prev, next, undefined, undefined, head.length);
+  assert.equal(pairs.length, 1);
+  const lonSeg = pairs[0].lon.segs[0];
+  assert.match(next.slice(lonSeg.start, lonSeg.end), /2°10'26"E/);
+});
+
 test('pairs entirely on one page are not reported as cross-page', () => {
   const prev = `site A: 41°24'12"N 2°10'26"E — done.`;
   const next = `site B: 33°52'8"S 151°12'33"E — done.`;

@@ -34,16 +34,34 @@ for (const dir of ['standard_fonts', 'cmaps']) {
   fs.cpSync(path.join(pdfjsSrc, dir), path.join(pdfjsOut, dir), { recursive: true });
 }
 
-// app.js sits one directory shallower than in the Electron layout, so its two
-// pdf.js references (the import and the PDFJS_BASE URL) move up a level.
-const appPath = path.join(out, 'app.js');
-let appJs = fs.readFileSync(appPath, 'utf8');
-const before = appJs;
-appJs = appJs.replaceAll('../node_modules/pdfjs-dist/', './node_modules/pdfjs-dist/');
-if (appJs === before) {
-  throw new Error('expected ../node_modules/pdfjs-dist/ references in app.js — update build-web.mjs');
+// The OCR runtime subset (src/ocrengine.js): the tesseract.js loader and worker,
+// the LSTM-only WebAssembly builds (the worker picks relaxed-SIMD, SIMD or
+// plain), and the English model. All served from the site, nothing from a CDN.
+const nm = (...p) => path.join(root, 'node_modules', ...p);
+const nmOut = (...p) => path.join(out, 'node_modules', ...p);
+const OCR_FILES = [
+  ['tesseract.js', 'dist', 'tesseract.esm.min.js'],
+  ['tesseract.js', 'dist', 'worker.min.js'],
+  ['tesseract.js-core', 'tesseract-core-lstm.wasm.js'],
+  ['tesseract.js-core', 'tesseract-core-simd-lstm.wasm.js'],
+  ['tesseract.js-core', 'tesseract-core-relaxedsimd-lstm.wasm.js'],
+  ['@tesseract.js-data', 'eng', '4.0.0_best_int', 'eng.traineddata.gz'],
+];
+for (const f of OCR_FILES) {
+  fs.mkdirSync(path.dirname(nmOut(...f)), { recursive: true });
+  fs.copyFileSync(nm(...f), nmOut(...f));
 }
-fs.writeFileSync(appPath, appJs);
+
+// app.js and ocrengine.js sit one directory shallower than in the Electron
+// layout, so their node_modules references (pdf.js, tesseract.js) move up a level.
+for (const [file, marker] of [['app.js', '../node_modules/pdfjs-dist/'], ['ocrengine.js', '../node_modules/']]) {
+  const p = path.join(out, file);
+  const src = fs.readFileSync(p, 'utf8');
+  if (!src.includes(marker)) {
+    throw new Error(`expected ${marker} references in ${file} — update build-web.mjs`);
+  }
+  fs.writeFileSync(p, src.replaceAll('../node_modules/', './node_modules/'));
+}
 
 // Widen the CSP so the browser build can call LLM APIs / GitHub directly
 // (the Electron build keeps the strict one — its requests go via main).

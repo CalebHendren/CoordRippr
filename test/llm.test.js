@@ -16,6 +16,7 @@ import {
   oneWord,
   chunkWork,
   chunkPerPage,
+  IMAGE_CHAR_COST,
   runPool,
   runBatched,
   DEFAULT_CONCURRENCY,
@@ -994,4 +995,64 @@ test('parseModelList rejects errors and non-lists', () => {
   assert.throws(() => parseModelList('<html>'), /not JSON/);
   assert.throws(() => parseModelList(JSON.stringify({ error: { message: 'nope' } })), /nope/);
   assert.throws(() => parseModelList(JSON.stringify({ models: [] })), /no model list/);
+});
+
+// --- scanned pages sent as images -------------------------------------------
+
+const scanPage = { file: 'scan.pdf', page: 2, text: '', image: { mime: 'image/jpeg', data: 'QUJD' } };
+const textPage = { file: 'scan.pdf', page: 1, text: `Quito at 0°13'07"S, 78°30'35"W.` };
+const scanRow = { id: 'r1', num: 1, cells: ['', ''], lat: -0.2, lon: -78.5, file: 'scan.pdf', page: 2 };
+
+test('buildPrompt: a scanned page goes as an image with a caption, not text', () => {
+  const { system, user, images } = buildPrompt({
+    rows: [scanRow], pages: [textPage, scanPage], cols: ['Genus', 'Species'],
+    verify: true, genus: true, species: true, anchor: true,
+  });
+  assert.deepEqual(images, [{ label: 'Image 1: scan.pdf — page 2', mime: 'image/jpeg', data: 'QUJD' }]);
+  assert.ok(user.includes('--- scan.pdf — page 2 --- (scanned page: see image 1)'));
+  assert.match(user, /Quito at 0°13'07"S/); // the text page still goes as text
+  assert.match(system, /come as images instead of text/);
+  assert.ok(system.endsWith('grounded in the text or the page images.'));
+});
+
+test('buildPrompt: without scanned images the prompt is unchanged', () => {
+  const { system, images } = buildPrompt({
+    rows: [{ ...scanRow, page: 1 }], pages: [textPage], cols: ['Genus', 'Species'], verify: true,
+  });
+  assert.deepEqual(images, []);
+  assert.doesNotMatch(system, /images/);
+  assert.ok(system.endsWith('grounded in the text.'));
+});
+
+test('buildRequest: images ride in each provider’s own content format', () => {
+  const images = [{ label: 'Image 1: scan.pdf — page 2', mime: 'image/jpeg', data: 'QUJD' }];
+  const a = JSON.parse(buildRequest({
+    kind: 'anthropic', url: 'https://api.anthropic.com/v1/messages', model: 'm', apiKey: 'k',
+    system: 'sys', user: 'hello', images,
+  }).body);
+  assert.deepEqual(a.messages[0].content, [
+    { type: 'text', text: 'hello' },
+    { type: 'text', text: 'Image 1: scan.pdf — page 2' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'QUJD' } },
+  ]);
+  const o = JSON.parse(buildRequest({
+    kind: 'openai', url: 'https://openrouter.ai/api/v1/chat/completions', model: 'm', apiKey: 'k',
+    system: 'sys', user: 'hello', images,
+  }).body);
+  assert.deepEqual(o.messages[1].content, [
+    { type: 'text', text: 'hello' },
+    { type: 'text', text: 'Image 1: scan.pdf — page 2' },
+    { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,QUJD' } },
+  ]);
+  // No images: content stays a plain string, as every provider has always had it.
+  const plain = JSON.parse(buildRequest({ kind: 'openai', url: 'https://x.test/v1', model: 'm', system: 's', user: 'u' }).body);
+  assert.equal(plain.messages[1].content, 'u');
+});
+
+test('chunkWork: a scanned image page counts against the budget like a page of text', () => {
+  const pages = [1, 2, 3, 4, 5].map((n) => ({ ...scanPage, page: n }));
+  const rows = pages.map((p) => ({ ...scanRow, id: `r${p.page}`, page: p.page }));
+  const chunks = chunkWork(pages, rows, IMAGE_CHAR_COST * 2 + 200);
+  assert.deepEqual(chunks.map((c) => c.pages.map((p) => p.page)), [[1, 2], [3, 4], [5]]);
+  assert.ok(chunks.every((c) => c.pages.every((p) => p.image)));
 });

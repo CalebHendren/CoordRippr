@@ -2,7 +2,7 @@
   "name": "coordrippr",
   "productName": "CoordRippr",
   "//version": "Bumping by 0.1 goes to 0.x.0 (minor +1, patch reset to 0); bumping by 0.0.1 goes to 0.0.x (patch +1).",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Extract coordinate data from PDFs into clean CSV",
   "main": "main.js",
   "type": "module",
@@ -24,7 +24,9 @@
     "dist": "electron-builder --publish never"
   },
   "dependencies": {
-    "pdfjs-dist": "^4.10.38"
+    "@tesseract.js-data/eng": "^1.0.0",
+    "pdfjs-dist": "^4.10.38",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "electron": "^33.4.11",
@@ -46,7 +48,19 @@
       "build/icon.png",
       "node_modules/**/*",
       "!node_modules/**/{test,tests,docs,example,examples}/**",
-      "!**/*.map"
+      "!**/*.map",
+      "!node_modules/@tesseract.js-data/eng/4.0.0/**",
+      "!node_modules/tesseract.js/{src,scripts,examples,docs}/**",
+      "!**/node_modules/tesseract.js-core/**",
+      {
+        "from": "node_modules/tesseract.js-core",
+        "to": "node_modules/tesseract.js-core",
+        "filter": [
+          "*-lstm.wasm.js",
+          "LICENSE",
+          "package.json"
+        ]
+      }
     ],
     "win": {
       "target": [
@@ -82,5 +96,6 @@
       "synopsis": "Extract coordinate data from PDFs",
       "description": "GUI tool that scans PDFs (including two-column journal articles) for latitude/longitude coordinates in DD or DMS form, highlights them on the page, and exports a cleaned CSV."
     }
-  }
+  },
+  "//build": "OCR (src/ocrengine.js) loads tesseract.js/dist, the three *-lstm.wasm.js builds of tesseract.js-core (each embeds its .wasm) and eng 4.0.0_best_int from node_modules/ by URL. The core is copied by an explicit file set because electron-builder otherwise nests it under tesseract.js/node_modules/; the patterns keep the rest of those packages (~45 MB) out of the installer."
 }

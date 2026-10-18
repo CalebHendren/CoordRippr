@@ -289,6 +289,11 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
 .file-entry.net-override .file-net-sel { color: var(--accent); border-color: var(--accent-dim); }
 .file-controls { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .file-controls .file-net { flex: 1; min-width: 0; margin-top: 0; }
+.file-ocr-sel {
+  flex: 1; min-width: 0; font-size: 11px; padding: 1px 2px;
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px;
+}
 .file-hide {
   flex: none; font-size: 11px; padding: 1px 7px; cursor: pointer;
   background: var(--panel-2); color: var(--muted);
@@ -349,6 +354,12 @@ th.srcinfo { color: var(--muted); font-size: 11px; }
   color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 #status.busy { color: var(--accent); }
+#ocr-progress {
+  display: flex; align-items: center; gap: 4px; flex: none; max-width: 45%;
+  color: var(--accent); white-space: nowrap;
+}
+#ocr-progress.hidden { display: none; }
+#ocr-progress-text { overflow: hidden; text-overflow: ellipsis; }
 #footer-right { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 #theme-picker { display: flex; align-items: center; gap: 4px; color: var(--muted); }
 #theme-select { padding: 1px 4px; font-size: 12px; max-width: 120px; }

@@ -4,6 +4,7 @@
 // back ends — plain files on disk (Electron) and IndexedDB (browser).
 
 import { DEFAULT_INTENSITY, LEGACY_INTENSITY_MAP } from './coords.js';
+import { OCR_MODES } from './ocr.js';
 
 // 3: the detection net went from 7 steps to 12 (see migrateSnapshot).
 export const SNAPSHOT_VERSION = 3;
@@ -43,7 +44,15 @@ export function packState(state, nextId) {
       // none, and they are recomputed on demand.
       byteHash: f.byteHash || null,
       textHash: f.textHash || null,
-      pages: f.pages.map((p) => ({ num: p.num, w: p.w, h: p.h, dets: [...p.dets] })),
+      ocrMode: f.ocrMode && f.ocrMode !== 'auto' ? f.ocrMode : undefined,
+      pages: f.pages.map((p) => ({
+        num: p.num, w: p.w, h: p.h, dets: [...p.dets],
+        // OCR: whether the page lacks a text layer, and the words read from it
+        // (ocr.js word list), so a restore never reads a page twice. Both
+        // optional: a snapshot from before OCR has neither, and still loads.
+        ...(typeof p.noText === 'boolean' ? { noText: p.noText } : {}),
+        ...(Array.isArray(p.ocr) ? { ocr: p.ocr } : {}),
+      })),
     })),
     dets: [...state.dets.values()].map((d) => ({
       id: d.id, fileId: d.fileId, pageNum: d.pageNum,
@@ -114,8 +123,12 @@ export function unpackState(rawSnap) {
     hidden: !!f.hidden, // set-aside PDFs stay set aside across reloads
     byteHash: f.byteHash || null,
     textHash: f.textHash || null,
+    ocrMode: OCR_MODES.includes(f.ocrMode) ? f.ocrMode : 'auto',
     pages: (f.pages || []).map((p) => ({
       num: p.num, w: p.w, h: p.h, proxy: null, dets: [...(p.dets || [])],
+      // null = not known yet (older snapshot): worked out again on restore.
+      noText: typeof p.noText === 'boolean' ? p.noText : null,
+      ocr: Array.isArray(p.ocr) ? p.ocr : null,
     })),
   }));
   const cols = Array.isArray(snap.cols) && snap.cols.length

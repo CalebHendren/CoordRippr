@@ -128,6 +128,31 @@ test('content hashes survive the round trip, and are null when never computed', 
   assert.equal(older.files[0].textHash, null);
 });
 
+test('OCR results and the per-PDF OCR mode survive the round trip', () => {
+  const state = sampleState();
+  const words = [["0°13'07\"S,", 120.5, 400.2, 48.1, 7.6, 0], ['78°30\'35"W', 171, 400.2, 50, 7.6, 1]];
+  state.files[0].ocrMode = 'force';
+  state.files[0].pages[0].noText = true;
+  state.files[0].pages[0].ocr = words;
+  state.files[0].pages[1].noText = false;
+  const restored = unpackState(JSON.parse(JSON.stringify(packState(state, 1))));
+  const f = restored.files[0];
+  assert.equal(f.ocrMode, 'force');
+  assert.deepEqual(f.pages[0].ocr, words);
+  assert.equal(f.pages[0].noText, true);
+  assert.equal(f.pages[1].noText, false);
+  assert.equal(f.pages[1].ocr, null);
+  // Never worked out (a snapshot from before OCR): null, so restore checks.
+  assert.equal(f.pages[2].noText, null);
+
+  // The default mode is not written, and anything unknown reads back as auto.
+  const plain = packState(sampleState(), 1);
+  assert.equal(plain.files[0].ocrMode, undefined);
+  assert.equal(unpackState(plain).files[0].ocrMode, 'auto');
+  plain.files[0].ocrMode = 'sometimes';
+  assert.equal(unpackState(plain).files[0].ocrMode, 'auto');
+});
+
 test('unpackState rejects garbage and fills defaults', () => {
   assert.equal(unpackState(null), null);
   assert.equal(unpackState({}), null);
