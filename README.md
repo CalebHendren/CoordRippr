@@ -11,7 +11,7 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
 
 ![CoordRippr detecting a mix of clean and messy coordinates in a two-column journal article, with the editable CSV (Genus / Species / Latitude / Longitude) on the left and yellow highlights on the page](docs/screenshot.png)
 
-*A two-column journal article with deliberately awful coordinates — DMS with symbols, `o`-for-degree, signed decimals, space-separated DMS, `Lat./Long.` labels — all detected, while years, depths, voucher ranges and an out-of-range fix are ignored.*
+*[docs/demo.pdf](docs/demo.pdf), a two-page placeholder article at the Balanced net. It writes one coordinate in each messy form the parser handles: DMS with symbols, Unicode primes, curly quotes, backticks and acute accents as ticks, `o`, `º`, `˚` and `Deg` for degrees, doubled `''` for seconds, a dropped degree sign, a stray closing tick, decimal minutes, decimal-comma seconds, space-separated DMS, hemisphere letters before or after, `South`/`West`, `O`/`Oeste`/`Ouest` for West, `Lat./Long.` labels, signed decimals with an en dash or a true minus, an unlabelled longitude-first pair, a coordinate wrapped across lines, a pair wrapped across lines, and a pair split across the page break. All are detected; the years, elevations, page ranges, "at least 14" and "25–30 degrees" are ignored. [docs/demo-scanned.pdf](docs/demo-scanned.pdf) is the same article as an image-only 2002-style scan, with no text layer.*
 
 ## Features
 
@@ -342,8 +342,11 @@ Key modules:
   match-to-rectangle mapping.
 - `tools/make-sample-pdf.mjs` — regenerates `test/fixtures/sample.pdf`, the
   two-column test document.
-- `tools/make-demo-pdf.mjs` — regenerates the two-column "journal article" demo
-  used for the README screenshot (`node tools/make-demo-pdf.mjs [outfile]`).
+- `tools/make-demo-pdf.mjs` — regenerates `docs/demo.pdf`, the two-page
+  "journal article" used for the README screenshot (`node tools/make-demo-pdf.mjs
+  [outfile]`). `test/demo-pdf.test.js` checks every form in it is still found.
+- `tools/make-scanned-pdf.mjs` — regenerates `docs/demo-scanned.pdf`, an
+  image-only scan of the demo (`node tools/make-scanned-pdf.mjs [in] [out]`).
 - `build/icon.svg` — icon source; rasterize with:
   ```bash
   npm i --no-save sharp
