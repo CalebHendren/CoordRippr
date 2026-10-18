@@ -11,7 +11,7 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
 
 ![CoordRippr detecting a mix of clean and messy coordinates in a two-column journal article, with the editable CSV (Genus / Species / Latitude / Longitude) on the left and yellow highlights on the page](docs/screenshot.png)
 
-*[docs/demo.pdf](docs/demo.pdf), a two-page placeholder article at the Balanced net. It writes one coordinate in each messy form the parser handles: DMS with symbols, Unicode primes, curly quotes, backticks and acute accents as ticks, `o`, `º`, `˚` and `Deg` for degrees, doubled `''` for seconds, a dropped degree sign, a stray closing tick, decimal minutes, decimal-comma seconds, space-separated DMS, hemisphere letters before or after, `South`/`West`, `O`/`Oeste`/`Ouest` for West, `Lat./Long.` labels, signed decimals with an en dash or a true minus, an unlabelled longitude-first pair, a coordinate wrapped across lines, a pair wrapped across lines, and a pair split across the page break. All are detected; the years, elevations, page ranges, "at least 14" and "25–30 degrees" are ignored. [docs/demo-scanned.pdf](docs/demo-scanned.pdf) is the same article as an image-only 2002-style scan, with no text layer.*
+*[docs/demo.pdf](docs/demo.pdf), a two-page placeholder article at the Balanced net. It writes one coordinate in each messy form the parser handles: DMS with symbols, Unicode primes, curly quotes, backticks and acute accents as ticks, `o`, `º`, `˚` and `Deg` for degrees, doubled `''` for seconds, a dropped degree sign, a stray closing tick, decimal minutes, decimal-comma seconds, space-separated DMS, hemisphere letters before or after, `South`/`West`, `O`/`Oeste`/`Ouest` for West, `Lat./Long.` labels, signed decimals with an en dash or a true minus, an unlabelled longitude-first pair, a coordinate wrapped across lines, a pair wrapped across lines, and a pair split across the page break. All are detected; the years, elevations, page ranges, "at least 14" and "25–30 degrees" are ignored. [docs/demo-scanned.pdf](docs/demo-scanned.pdf) is the same article as an image-only 2002-style scan, with no text layer; OCR reads it and finds most of the same coordinates.*
 
 ## Features
 
@@ -36,6 +36,28 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   keep, hand to a colleague, or restore on another machine.
 - **Batch scanning** — Opening a folder scans every PDF within it recursively.
   Individual file selection and drag-and-drop are also supported.
+- **OCR for scanned PDFs** — A page with no text layer (a scan, a photocopy, an
+  image-only PDF) is read with OCR in the background after it loads, entirely
+  offline: the OCR engine ([tesseract.js](https://github.com/naptha/tesseract.js))
+  and its English model ship with the app and the web version, and nothing is
+  uploaded. The footer shows progress, with *Stop*. The OCR'd text then works
+  like any other: coordinates are detected, highlighted on the scan, re-scanned
+  with the net, sent to LLM Assist and readable by *Mark coord*.
+  - Results are saved with the project, so a page is only ever read once.
+  - *OCR scans* in the toolbar turns it off for the whole app. Each PDF also has
+    its own setting in the file list: *OCR auto* (pages without a text layer),
+    *OCR off*, or *OCR all pages*, which ignores a PDF's text layer and reads
+    every page — for PDFs whose text layer is garbage.
+  - OCR misreads coordinates in predictable ways (`′` and `″` read as `°` or
+    `"`, primes dropped between digits, a degree `o` read as `0`, `1` read as
+    `I`, `O` for West read as `0`). CoordRippr repairs those inside
+    coordinates only, so prose and numbers elsewhere are left alone. OCR is
+    still OCR: check rows from scans against the page.
+  - **OCR'd PDF…** saves the viewed PDF as a searchable copy: the page images
+    with the OCR text laid invisibly over them, so any PDF reader can search,
+    select and copy the text.
+  - Each page takes from a few seconds to under a minute, depending on the
+    machine (the two-page demo scan: about 10 s on a fast one).
 - **Detection** — Recognizes decimal degrees (`41.40338, 2.17403`) and DMS
   (`41°24'12.2"N`), including common degenerate forms:
   - `o` or `O` substituted for the degree symbol (`12o30'N`)
@@ -102,7 +124,8 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   same Hide mechanism, so nothing is deleted and *Show* brings them back. A
   folder scan that turns up candidates says so in the status bar but changes
   nothing on its own. Note that a scanned PDF has no text layer and so no text
-  fingerprint; those are matched byte-for-byte only.
+  fingerprint (OCR text is too variable to identify a document by); those are
+  matched byte-for-byte only.
 - **Page view** — Shows only pages with detections by default (*Show all pages*
   to view the rest). Matches are highlighted; hovering a highlight shows the raw
   matched text; the *Highlights* toggle hides the boxes. Clicking a CSV row
@@ -110,7 +133,7 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
   CSV row.
 - **Mark a coordinate by hand** — Some coordinates are simply not in the text
   layer: the degrees were dropped by the typesetter, the glyphs came out as
-  garbage, the page is a scan. Press *✥ Mark coord*, drag a box around the
+  garbage, OCR could not read them. Press *✥ Mark coord*, drag a box around the
   coordinate on the page, and type the values. CoordRippr reads whatever text
   sits under the box and pre-fills the fields, so usually you only correct it.
   The box becomes a green dashed highlight linked to its row in both directions,
@@ -311,13 +334,14 @@ Actions". Browser-build caveats:
    results before relying on them.
 7. **Export CSV…**
 
-> Detection operates on the PDF text layer. Scanned or image-only PDFs contain no
-> text to search; run OCR on them first.
+> Detection operates on the PDF text layer. Scanned or image-only pages have none,
+> so CoordRippr reads them with OCR in the background (see **OCR for scanned
+> PDFs**); the footer shows progress, and the rows appear when a PDF is done.
 
 ## Development
 
 ```bash
-npm install        # downloads Electron and pdf.js; requires network access
+npm install        # downloads Electron, pdf.js and tesseract.js; requires network access
 npm test           # parser / LLM / update unit tests + a pdf.js integration test
 npm start          # run the app
 npm run web        # build the static browser version into dist-web/
@@ -340,6 +364,15 @@ Key modules:
 - `src/projectio.js` — the portable `.crproj` export bundle. Pure module.
 - `src/pdftext.js` — pdf.js text items to a searchable string plus
   match-to-rectangle mapping.
+- `src/ocr.js` — OCR glue: which pages need OCR, Tesseract word boxes to a
+  pdf.js-shaped text layer (one item per word, so highlights land on the word),
+  running heads moved out of the way of cross-page pairs, and the repairs for
+  OCR's coordinate misreads. Pure module, unit-tested (including against real
+  OCR output of the scanned demo, `test/fixtures/demo-scanned-ocr.json`).
+- `src/ocrengine.js` — renders a page at 300 dpi and runs tesseract.js on it
+  (local worker, WebAssembly core and `eng` model; no CDN).
+- `src/pdfout.js` — the image-PDF writer behind the highlighted and OCR'd PDF
+  exports (invisible text layer for the latter). Pure module, unit-tested.
 - `tools/make-sample-pdf.mjs` — regenerates `test/fixtures/sample.pdf`, the
   two-column test document.
 - `tools/make-demo-pdf.mjs` — regenerates `docs/demo.pdf`, the two-page

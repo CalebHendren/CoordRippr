@@ -360,11 +360,13 @@ export const CROSS_PAGE_WINDOW = 240;
  * break). Single-page pairs are ignored (the per-page scan has those).
  * Each returned token carries `segs`: its char ranges in each page's own text,
  * [{page: 'prev'|'next', start, end}, …].
+ * `nextStart` skips the start of the next page (an OCR'd page's running head,
+ * see ocr.js bodyStart); offsets stay relative to the whole of nextText.
  */
-export function extractCrossPage(prevText, nextText, intensity = DEFAULT_INTENSITY, window = CROSS_PAGE_WINDOW) {
+export function extractCrossPage(prevText, nextText, intensity = DEFAULT_INTENSITY, window = CROSS_PAGE_WINDOW, nextStart = 0) {
   const tailStart = Math.max(0, prevText.length - window);
   const tail = prevText.slice(tailStart);
-  const head = nextText.slice(0, window);
+  const head = nextText.slice(nextStart, nextStart + window);
   const joint = tail + '\n' + head;
   const boundary = tail.length; // index of the '\n' we inserted
   const out = [];
@@ -374,15 +376,15 @@ export function extractCrossPage(prevText, nextText, intensity = DEFAULT_INTENSI
     const e = Math.max(pair.lat.end, pair.lon.end);
     if (!(s < boundary && e > boundary + 1)) continue; // must actually cross
     out.push({
-      lat: withSegments(pair.lat, boundary, tailStart),
-      lon: withSegments(pair.lon, boundary, tailStart),
+      lat: withSegments(pair.lat, boundary, tailStart, nextStart),
+      lon: withSegments(pair.lon, boundary, tailStart, nextStart),
     });
   }
   return out;
 }
 
 // Map a token found in the joined tail+head text back onto the two pages.
-function withSegments(tok, boundary, tailStart) {
+function withSegments(tok, boundary, tailStart, nextStart) {
   const segs = [];
   if (tok.start < boundary) {
     segs.push({
@@ -394,8 +396,8 @@ function withSegments(tok, boundary, tailStart) {
   if (tok.end > boundary + 1) {
     segs.push({
       page: 'next',
-      start: Math.max(0, tok.start - boundary - 1),
-      end: tok.end - boundary - 1,
+      start: nextStart + Math.max(0, tok.start - boundary - 1),
+      end: nextStart + tok.end - boundary - 1,
     });
   }
   return { ...tok, segs };

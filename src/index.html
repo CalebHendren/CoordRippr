@@ -41,6 +41,9 @@
       <label title="Toggle the yellow detection highlights — turn off to read the text underneath">
         <input type="checkbox" id="chk-highlights" checked /> Highlights
       </label>
+      <label title="Read scanned pages (no text layer) with OCR, in the background and offline. Each PDF can also be set to OCR off or OCR all pages in the file list.">
+        <input type="checkbox" id="chk-ocr" checked /> OCR scans
+      </label>
       <button id="btn-mark" title="Mark a coordinate by hand: drag a box over it on the page, then type the values. For coordinates the parser cannot read.">✥ Mark coord</button>
     </div>
     <div class="tb-group">
@@ -52,6 +55,7 @@
     <div class="tb-group">
       <button id="btn-llm" title="Verify coordinates and fill the data columns with an LLM (your own API key)">✨ LLM Assist…</button>
       <button id="btn-save-hl" title="Save the currently viewed PDF as a copy with the coordinate highlights baked in">Highlighted PDF…</button>
+      <button id="btn-save-ocr" title="Save the currently viewed scanned PDF as a searchable copy: the page images with the OCR text laid invisibly over them, so any PDF reader can search and copy it">OCR'd PDF…</button>
       <button id="btn-export" class="primary">Export CSV…</button>
     </div>
   </header>
@@ -122,6 +126,10 @@
 
   <footer id="footer">
     <div id="status">Ready.</div>
+    <div id="ocr-progress" class="hidden">
+      <span id="ocr-progress-text"></span>
+      <button id="btn-ocr-stop" class="linkish" title="Stop reading scanned pages. Pages already read are kept.">Stop</button>
+    </div>
     <div id="footer-right">
       <span id="update-chip" class="hidden" role="button" title="Open the releases page"></span>
       <label id="theme-picker" title="Colour scheme for the app window">
@@ -193,6 +201,12 @@
           <legend>Tasks</legend>
           <label title="Every row you send is checked against the PDF text and gets a ✓ / ⚠ / ? badge. Rows the model skips (no badge) are re-sent automatically until they come back badged."><input type="checkbox" id="llm-verify" checked disabled /> Verify coordinates against the PDF text <span class="muted">(always on — every sent row gets a badge)</span></label>
           <label title="Marks each row's coordinate in the page text that is sent — the same span the yellow highlight covers — and repeats that anchor under the row with its page, character offsets and matched text. The model then knows exactly which occurrence of a number belongs to which row instead of guessing between look-alikes on the same page. Rows marked by hand have no anchor. See it in Preview prompt."><input type="checkbox" id="llm-anchor" checked /> Anchor each row to the exact text it was found in <span class="muted">(recommended)</span></label>
+          <label title="Scanned pages have no text of their own; CoordRippr reads them with OCR. Send the model that OCR text, or the original page image so a vision-capable model reads the scan itself — slower and costlier, and the model must accept images. Pages with a real text layer always go as text.">Scanned pages go as
+            <select id="llm-scan-as">
+              <option value="ocr">OCR text</option>
+              <option value="image">the original page image (vision models)</option>
+            </select>
+          </label>
           <label title="Fills the Genus column (column 1) with a single-word genus taken from the PDF text near each coordinate."><input type="checkbox" id="llm-genus" checked /> Extract <strong>Genus</strong> → column 1 <span class="muted">(one word)</span></label>
           <label title="Fills the Species column (column 2) with a single-word species epithet taken from the PDF text near each coordinate."><input type="checkbox" id="llm-species" checked /> Extract <strong>Species</strong> → column 2 <span class="muted">(one word)</span></label>
           <label title="Fills any remaining data columns (beyond those handled by the Genus/Species toggles) from the PDF text."><input type="checkbox" id="llm-fill" /> Fill the other data columns from the PDF text</label>

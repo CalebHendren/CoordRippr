@@ -199,12 +199,18 @@ export const MAX_TEMPERATURE = 2;
  * Electron proxies via main). `temperature` is sent only when it is a finite
  * number; leave it undefined to omit the field entirely (the default behaviour).
  */
-export function buildRequest({ kind, url, model, apiKey, system, user, maxTokens = 4096, temperature, browser = false }) {
+export function buildRequest({ kind, url, model, apiKey, system, user, images = [], maxTokens = 4096, temperature, browser = false }) {
   if (!url) throw new Error('No endpoint URL configured');
   const withTemp = (body) => {
     if (Number.isFinite(temperature)) body.temperature = temperature;
     return body;
   };
+  // Scanned pages sent as pictures (buildPrompt's `images`): the prompt text
+  // first, then each image after a one-line caption naming its page. Without
+  // images the content stays a plain string, exactly as before.
+  const content = (imagePart) => (images.length
+    ? [{ type: 'text', text: user }, ...images.flatMap((img) => [{ type: 'text', text: img.label }, imagePart(img)])]
+    : user);
   if (kind === 'anthropic') {
     const headers = {
       'content-type': 'application/json',
@@ -220,7 +226,10 @@ export function buildRequest({ kind, url, model, apiKey, system, user, maxTokens
         model,
         max_tokens: maxTokens,
         system,
-        messages: [{ role: 'user', content: user }],
+        messages: [{
+          role: 'user',
+          content: content((img) => ({ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.data } })),
+        }],
       })),
     };
   }
@@ -239,7 +248,7 @@ export function buildRequest({ kind, url, model, apiKey, system, user, maxTokens
       [tokenField]: maxTokens,
       messages: [
         { role: 'system', content: system },
-        { role: 'user', content: user },
+        { role: 'user', content: content((img) => ({ type: 'image_url', image_url: { url: `data:${img.mime};base64,${img.data}` } })) },
       ],
     })),
   };
@@ -587,9 +596,17 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, spe
       `anchor on a page not included in this request) must be judged from the page text as a whole.\n\n`
     : '';
 
+  // Scanned pages the user chose to send as pictures rather than OCR text.
+  const imagePages = pages.filter((p) => p.image);
+  const imageNote = imagePages.length
+    ? `Some pages are scans and come as images instead of text: each is attached after the text, captioned with ` +
+      `its file and page. Read those pages from the image itself.\n\n`
+    : '';
+
   const system =
     `You are a meticulous data-extraction assistant for CoordRippr, a tool that pulls geographic coordinates out of PDFs. ` +
     `You receive CSV rows (coordinates with page references) and the text of the PDF pages they came from.\n\n` +
+    imageNote +
     anchorNote +
     `Tasks:\n${tasks.join('\n')}\n\n` +
     `Respond with ONLY a JSON array, no prose, one object per row:\n` +
@@ -601,7 +618,8 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, spe
     `${allowPrev ? ', "need_prev": true|false' : ''}` +
     `${allowNext ? ', "need_next": true|false' : ''}, ` +
     `"note": "<one short sentence of reasoning>"}]\n\n` +
-    `Include every row you were given exactly once. Never invent coordinates that are not grounded in the text.`;
+    `Include every row you were given exactly once. Never invent coordinates that are not grounded in the text` +
+    `${imagePages.length ? ' or the page images' : ''}.`;
 
   const lines = [];
   if (extra && extra.trim()) {
@@ -634,11 +652,17 @@ export function buildPrompt({ rows, pages, cols, extra, verify, fill, genus, spe
   }
   lines.push('');
   lines.push('DOCUMENT TEXT:');
+  const images = [];
   for (const p of pages) {
+    if (p.image) {
+      images.push({ label: `Image ${images.length + 1}: ${p.file} — page ${p.page}`, mime: p.image.mime, data: p.image.data });
+      lines.push(`--- ${p.file} — page ${p.page} --- (scanned page: see image ${images.length})`);
+      continue;
+    }
     lines.push(`--- ${p.file} — page ${p.page} ---`);
     lines.push(plan ? plan.texts.get(pageKey(p.file, p.page)) ?? p.text : p.text);
   }
-  return { system, user: lines.join('\n') };
+  return { system, user: lines.join('\n'), images };
 }
 
 // ---------------------------------------------------------------------------
@@ -754,6 +778,10 @@ export const MAX_ROWS_PER_CHUNK = 40;
 // page text plus 70 on the row's own line. Rows carry no anchors when the user
 // turns anchoring off, so the budget is then unchanged.
 export const ANCHOR_OVERHEAD = 90;
+// What a page sent as an image counts for against the character budget: a
+// scanned page costs a vision model about as many tokens as this much text, so
+// a chunk holds about four scans.
+export const IMAGE_CHAR_COST = 6000;
 
 // How much of an oversized page survives, and a note in place of the rest.
 // `truncatedAt` tells buildPrompt where the original text stopped: the notice
@@ -792,7 +820,7 @@ export function chunkWork(pages, rows, budget = DEFAULT_CHAR_BUDGET) {
     // an allowance, not accounting.
     const anchorChars =
       pageRows.reduce((n, r) => n + ((r.anchors && r.anchors.length) || 0), 0) * ANCHOR_OVERHEAD;
-    const size = page.text.length + 50 + anchorChars;
+    const size = (page.image ? IMAGE_CHAR_COST : page.text.length) + 50 + anchorChars;
     if (
       cur.pages.length > 0 &&
       (cur.chars + size > budget || cur.rows.length + pageRows.length > MAX_ROWS_PER_CHUNK)

@@ -35,6 +35,8 @@ function pickDivider(prev, cur) {
   const cy = cur.transform[5];
   const ph = prev.height || 8;
   if (Math.abs(cy - py) > ph * 0.75) return '\n';
+  // OCR words (ocr.js) are separate words however tight the gap between boxes.
+  if (prev.ocr && cur.ocr) return ' ';
   const prevEnd = prev.transform[4] + (prev.width || 0);
   const gap = cur.transform[4] - prevEnd;
   return gap > ph * 0.12 ? ' ' : '';
