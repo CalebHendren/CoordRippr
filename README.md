@@ -11,7 +11,11 @@ Support development on [Ko-fi](https://ko-fi.com/calebhendren).
 
 ![CoordRippr detecting a mix of clean and messy coordinates in a two-column journal article, with the editable CSV (Genus / Species / Latitude / Longitude) on the left and yellow highlights on the page](docs/screenshot.png)
 
-*[docs/demo.pdf](docs/demo.pdf), a two-page placeholder article at the Balanced net. It writes one coordinate in each messy form the parser handles: DMS with symbols, Unicode primes, curly quotes, backticks and acute accents as ticks, `o`, `º`, `˚` and `Deg` for degrees, doubled `''` for seconds, a dropped degree sign, a stray closing tick, decimal minutes, decimal-comma seconds, space-separated DMS, hemisphere letters before or after, `South`/`West`, `O`/`Oeste`/`Ouest` for West, `Lat./Long.` labels, signed decimals with an en dash or a true minus, an unlabelled longitude-first pair, a coordinate wrapped across lines, a pair wrapped across lines, and a pair split across the page break. All are detected; the years, elevations, page ranges, "at least 14" and "25–30 degrees" are ignored. [docs/demo-scanned.pdf](docs/demo-scanned.pdf) is the same article as an image-only 2002-style scan, with no text layer; OCR reads it and finds most of the same coordinates.*
+*[docs/demo.pdf](docs/demo.pdf), a two-page placeholder article at the Balanced net. It writes one coordinate in each messy form the parser handles: DMS with symbols, Unicode primes, curly quotes, backticks and acute accents as ticks, `o`, `º`, `˚` and `Deg` for degrees, doubled `''` for seconds, a dropped degree sign, a stray closing tick, decimal minutes, decimal-comma seconds, space-separated DMS, hemisphere letters before or after, `South`/`West`, `O`/`Oeste`/`Ouest` for West, `Lat./Long.` labels, signed decimals with an en dash or a true minus, an unlabelled longitude-first pair, a coordinate wrapped across lines, a pair wrapped across lines, and a pair split across the page break. All are detected; the years, elevations, page ranges, "at least 14" and "25–30 degrees" are ignored.*
+
+![CoordRippr reading the image-only scan of the same article with OCR, with the detected coordinates highlighted on the scanned page](docs/screenshot-scanned.png)
+
+*[docs/demo-scanned.pdf](docs/demo-scanned.pdf) is the same article as an image-only 2002-style scan, with no text layer. OCR reads it in the background and finds most of the same coordinates at the Balanced net; an empty cell (rows 7 and 18 here) is a half OCR could not read.*
 
 ## Features
 
